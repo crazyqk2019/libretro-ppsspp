@@ -2469,6 +2469,9 @@ if(OPENGL_opengl_LIBRARY AND OpenGL_GL_PREFERENCE STREQUAL GLVND AND NOT APPLE)
 	set(OPENGL_LIBRARIES OpenGL::OpenGL)
 endif()
 
+target_link_libraries(${CoreLibName} Common native chdr kirk cityhash sfmt19937 xbrz xxhash rcheevos minimp3 at3_standalone lua ${GlslangLibs}
+	${CoreExtraLibs} ${OPENGL_LIBRARIES} ${X11_LIBRARIES} ${CMAKE_DL_LIBS})
+
 if(USE_SYSTEM_ZSTD)
 	find_package(ZSTD REQUIRED)
 	target_include_directories(${CoreLibName} PRIVATE ${ZSTD_INCLUDE_DIR})
@@ -2480,9 +2483,6 @@ else()
 endif()
 
 include_directories(ext/libchdr/include)
-
-target_link_libraries(${CoreLibName} Common native chdr kirk cityhash sfmt19937 xbrz xxhash rcheevos minimp3 at3_standalone lua ${GlslangLibs}
-	${CoreExtraLibs} ${OPENGL_LIBRARIES} ${X11_LIBRARIES} ${CMAKE_DL_LIBS})
 
 # Winsock
 if(WIN32)
