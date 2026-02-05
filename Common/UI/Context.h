@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstdint>
 #include <string>
+#include <functional>
 
 #include "Common/Math/geom2d.h"
 #include "Common/Math/lin/vec3.h"
@@ -24,12 +25,12 @@ namespace Draw {
 
 class DrawBuffer;
 class TextDrawer;
+struct FontStyle;
 
 namespace UI {
 	struct Drawable;
 	struct EventParams;
 	struct Theme;
-	struct FontStyle;
 	class Event;
 	class View;
 }
@@ -42,6 +43,18 @@ struct UITransform {
 	Lin::Vec3 scale;
 	float alpha;
 };
+
+enum class AtlasChoice : int {
+	General,
+	Font,
+};
+
+struct AtlasData {
+	Atlas *atlas;
+	Draw::Texture *texture;
+};
+
+typedef std::function<AtlasData(Draw::DrawContext *, AtlasChoice, float dpiScale, bool invalidate)> UIAtlasProviderFunc;
 
 class UIContext {
 public:
@@ -78,11 +91,11 @@ public:
 
 	// High level drawing functions. They generally assume the default texture to be bounds.
 
-	void SetFontStyle(const UI::FontStyle &style);
-	const UI::FontStyle &GetFontStyle() { return *fontStyle_; }
+	void SetFontStyle(const FontStyle &style);
+	const FontStyle &GetFontStyle() { return *fontStyle_; }
 	void SetFontScale(float scaleX, float scaleY);
-	void MeasureText(const UI::FontStyle &style, float scaleX, float scaleY, std::string_view str, float *x, float *y, int align = 0) const;
-	void MeasureTextRect(const UI::FontStyle &style, float scaleX, float scaleY, std::string_view str, const Bounds &bounds, float *x, float *y, int align = 0) const;
+	void MeasureText(const FontStyle &style, float scaleX, float scaleY, std::string_view str, float *x, float *y, int align = 0) const;
+	void MeasureTextRect(const FontStyle &style, float scaleX, float scaleY, std::string_view str, float maxWidth, float *x, float *y, int align = 0) const;
 	void DrawText(std::string_view str, float x, float y, uint32_t color, int align = 0);
 	void DrawTextShadow(std::string_view str, float x, float y, uint32_t color, int align = 0);
 	void DrawTextRect(std::string_view str, const Bounds &bounds, uint32_t color, int align = 0);
@@ -90,17 +103,18 @@ public:
 	// Will squeeze the text into the bounds if needed.
 	void DrawTextRectSqueeze(std::string_view str, const Bounds &bounds, uint32_t color, int align = 0);
 
-	float CalculateTextScale(std::string_view str, float availWidth, float availHeight) const;
+	float CalculateTextScale(std::string_view str, float availWidth) const;
 
 	void FillRect(const UI::Drawable &drawable, const Bounds &bounds);
 	void DrawRectDropShadow(const Bounds &bounds, float radius, float alpha, uint32_t color = 0);
 	void DrawImageVGradient(ImageID image, uint32_t color1, uint32_t color2, const Bounds &bounds);
+	void DrawImageRotated(ImageID atlas_image, float x, float y, float scale, float angle, uint32_t color, bool mirror_h);
 
 	// in dps, like dp_xres and dp_yres
 	void SetBounds(const Bounds &b) { bounds_ = b; }
 	const Bounds &GetBounds() const { return bounds_; }
-	Bounds GetLayoutBounds() const;
-	Draw::DrawContext *GetDrawContext() { return draw_; }
+	Bounds GetLayoutBounds(bool ignoreBottomInset = false) const;
+	Draw::DrawContext *GetDrawContext() const { return draw_; }
 	const UI::Theme &GetTheme() const {
 		return *theme;
 	}
@@ -110,20 +124,20 @@ public:
 	void PopTransform();
 	Bounds TransformBounds(const Bounds &bounds);
 
-	void setUIAtlas(const std::string &name);
-
-	// TODO: Move to private.
-	const UI::Theme *theme;
-
+	void SetTheme(const UI::Theme *theme) { this->theme = theme; }
+	void SetAtlasProvider(UIAtlasProviderFunc func) { atlasProvider_ = func; }
+	void InvalidateAtlas();
 private:
 	Draw::DrawContext *draw_ = nullptr;
 	Bounds bounds_;
+
+	const UI::Theme *theme = nullptr;
 
 	double frameStartTime_ = 0.0;
 
 	float fontScaleX_ = 1.0f;
 	float fontScaleY_ = 1.0f;
-	UI::FontStyle *fontStyle_ = nullptr;
+	FontStyle *fontStyle_ = nullptr;
 	TextDrawer *textDrawer_ = nullptr;
 
 	Draw::SamplerState *sampler_ = nullptr;
@@ -137,6 +151,6 @@ private:
 	std::vector<Bounds> scissorStack_;
 	std::vector<UITransform> transformStack_;
 
-	std::string lastUIAtlas_;
-	std::string UIAtlas_ = "ui_atlas.zim";
+	UIAtlasProviderFunc atlasProvider_{};
+	bool atlasInvalid_ = false;
 };

@@ -2,14 +2,17 @@
 
 
 #include "ext/imgui/imgui_internal.h"
+#include "ext/imgui/imgui_extras.h"
 
 #include "Common/StringUtils.h"
 #include "Common/File/FileUtil.h"
 #include "Common/Data/Format/IniFile.h"
 #include "Common/Data/Text/Parsers.h"
 #include "Common/Log/LogManager.h"
+#include "Common/TimeUtil.h"
 #include "Core/Config.h"
 #include "Core/System.h"
+#include "Core/SaveState.h"
 #include "Core/Debugger/MemBlockInfo.h"
 #include "Core/RetroAchievements.h"
 #include "Core/Core.h"
@@ -25,12 +28,16 @@
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/SocketManager.h"
 #include "Core/HLE/NetInetConstants.h"
+#include "Core/HLE/sceKernelModule.h"
+#include "Core/HLE/sceAac.h"
+#include "Core/HLE/sceMpeg.h"
 #include "Core/HLE/sceNp.h"
 #include "Core/HLE/sceNet.h"
 #include "Core/HLE/sceNetApctl.h"
 #include "Core/HLE/sceNetAdhoc.h"
 #include "Core/HLE/proAdhoc.h"
 #include "Core/HLE/sceNetAdhocMatching.h"
+#include "Core/HLE/NetAdhocCommon.h"
 #include "Common/System/Request.h"
 
 #include "Core/Util/AtracTrack.h"
@@ -41,6 +48,8 @@
 #include "Core/HLE/AtracCtx.h"
 #include "Core/HLE/sceSas.h"
 #include "Core/HW/SasAudio.h"
+#include "Core/HW/Display.h"
+#include "Core/Dialog/PSPSaveDialog.h"
 
 #include "Core/CoreTiming.h"
 // Threads window
@@ -55,6 +64,8 @@
 
 #include "UI/ImDebugger/ImDebugger.h"
 #include "UI/ImDebugger/ImGe.h"
+#include "UI/AudioCommon.h"
+#include "UI/GameInfoCache.h"
 
 extern bool g_TakeScreenshot;
 static ImVec4 g_normalTextColor;
@@ -145,6 +156,33 @@ void ImClickableValueFloat(const char *id, float value) {
 	}
 	ImGui::PopStyleColor();
 	ImGui::PopID();
+}
+
+void DrawTimeView(ImConfig &cfg) {
+	ImGui::SetNextWindowSize(ImVec2(420, 300), ImGuiCond_FirstUseEver);
+	if (!ImGui::Begin("Time", &cfg.timeOpen)) {
+		ImGui::End();
+		return;
+	}
+
+	// Display timing
+	if (ImGui::CollapsingHeader("Display Timing", ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::Text("Num VBlanks: %d", __DisplayGetNumVblanks());
+		ImGui::Text("FlipCount: %d", __DisplayGetFlipCount());
+		ImGui::Text("VCount: %d", __DisplayGetVCount());
+		ImGui::Text("HCount cur: %d accum: %d", __DisplayGetCurrentHcount(), __DisplayGetAccumulatedHcount());
+		ImGui::Text("IsVblank: %d", DisplayIsVblank());
+	}
+
+	// RTC
+	if (ImGui::CollapsingHeader("RTC", ImGuiTreeNodeFlags_DefaultOpen)) {
+		PSPTimeval tv;
+		__RtcTimeOfDay(&tv);
+		ImGui::Text("RtcTimeOfDay: %d.%06d", tv.tv_sec, tv.tv_usec);
+		ImGui::Text("RtcGetCurrentTick: %lld", (long long)__RtcGetCurrentTick());
+	}
+
+	ImGui::End();
 }
 
 void DrawSchedulerView(ImConfig &cfg) {
@@ -306,21 +344,6 @@ static void DrawVFPU(ImConfig &config, ImControl &control, const MIPSDebugInterf
 	ImGui::End();
 }
 
-static const char *ThreadStatusToString(u32 status) {
-	switch (status) {
-	case THREADSTATUS_RUNNING: return "Running";
-	case THREADSTATUS_READY: return "Ready";
-	case THREADSTATUS_WAIT: return "Wait";
-	case THREADSTATUS_SUSPEND: return "Suspended";
-	case THREADSTATUS_DORMANT: return "Dormant";
-	case THREADSTATUS_DEAD: return "Dead";
-	case THREADSTATUS_WAITSUSPEND: return "WaitSuspended";
-	default:
-		break;
-	}
-	return "(unk)";
-}
-
 void WaitIDToString(WaitType waitType, SceUID waitID, char *buffer, size_t bufSize) {
 	switch (waitType) {
 	case WAITTYPE_AUDIOCHANNEL:
@@ -360,6 +383,9 @@ void WaitIDToString(WaitType waitType, SceUID waitID, char *buffer, size_t bufSi
 	case WAITTYPE_VBLANK:
 	case WAITTYPE_MICINPUT:
 		truncate_cpy(buffer, bufSize, "-");
+		return;
+	case WAITTYPE_CTRL:
+		snprintf(buffer, bufSize, "ctrl: %d", waitID);
 		return;
 	default:
 		truncate_cpy(buffer, bufSize, "(unimpl)");
@@ -411,7 +437,7 @@ void DrawThreadView(ImConfig &cfg, ImControl &control) {
 			ImGui::TableNextColumn();
 			ImGui::TextUnformatted(ThreadStatusToString(thread.status));
 			ImGui::TableNextColumn();
-			ImGui::TextUnformatted(getWaitTypeName(thread.waitType));
+			ImGui::TextUnformatted(WaitTypeToString(thread.waitType));
 			ImGui::TableNextColumn();
 			char temp[64];
 			WaitIDToString(thread.waitType, thread.waitID, temp, sizeof(temp));
@@ -445,6 +471,130 @@ void DrawThreadView(ImConfig &cfg, ImControl &control) {
 
 		ImGui::EndTable();
 	}
+	ImGui::End();
+}
+
+void DrawParamSFO(ImConfig &cfg, ImControl &control) {
+	ImGui::SetNextWindowSize(ImVec2(420, 300), ImGuiCond_FirstUseEver);
+	if (!ImGui::Begin("PARAMS.SFO", &cfg.paramSFOOpen)) {
+		ImGui::End();
+		return;
+	}
+
+	auto renderParamSFOTable = [](ParamSFOData &data) {
+		const auto &map = data.Values();
+		if (System_GetPropertyBool(SYSPROP_HAS_TEXT_CLIPBOARD) && ImGui::Button("Copy to clipboard")) {
+			char buffer[4096];
+			StringWriter w(buffer);
+			for (auto &[key, value] : map) {
+				switch (value.type) {
+				case ParamSFOData::VT_UTF8:
+					w.F("%s: %s\n", key.c_str(), value.s_value.c_str());
+					break;
+				case ParamSFOData::VT_UTF8_SPE:
+					w.F("%s: %d raw bytes\n", key.c_str(), (int)value.s_value.size());
+					break;
+				case ParamSFOData::VT_INT:
+					w.F("%s: %d\n", key.c_str(), value.i_value);
+					break;
+				default:
+					break;
+				}
+			}
+			System_CopyStringToClipboard(w.as_view());
+		}
+
+		if (ImGui::BeginTable("paramsfo", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH | ImGuiTableFlags_Resizable)) {
+			ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+			ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthFixed, 120.f);
+			ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 50.f);
+			ImGui::TableHeadersRow();
+
+			for (auto &[key, value] : map) {
+				ImGui::TableNextRow();
+				ImGui::PushID(key.c_str());
+				ImGui::TableNextColumn();
+				ImGui::Text("%s", key.c_str());
+				ImGui::TableNextColumn();
+				switch (value.type) {
+				case ParamSFOData::VT_UTF8:
+					ImGui::Text("%s", value.s_value.c_str());
+					break;
+				case ParamSFOData::VT_UTF8_SPE:
+					ImGui::Text("%d raw bytes", (int)value.s_value.size());
+					break;
+				case ParamSFOData::VT_INT:
+					ImGui::Text("%d", value.i_value);
+					break;
+				default:
+					ImGui::TextUnformatted("N/A");
+					break;
+				}
+				ImGui::TableNextColumn();
+				ImGui::Text("%s", ParamSFOData::ValueTypeToString(value.type));
+				ImGui::PopID();
+			}
+
+			ImGui::EndTable();
+		}
+	};
+
+	if (ImGui::BeginTabBar("ParamSFOTabs")) {
+		if (ImGui::BeginTabItem("Active")) {
+			renderParamSFOTable(g_paramSFO);
+			ImGui::EndTabItem();
+		}
+		if (ImGui::BeginTabItem("Original")) {
+			renderParamSFOTable(g_paramSFORaw);
+			ImGui::EndTabItem();
+		}
+		if (ImGui::BeginTabItem("GameInfo")) {
+			Path path = PSP_CoreParameter().fileToStart;
+			std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(nullptr, path, GameInfoFlags::PARAM_SFO);
+
+			if (info && ImGui::BeginTable("paramsfo", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH | ImGuiTableFlags_Resizable)) {
+				ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+				ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthFixed, 270.0f);
+
+				ImGui::TableHeadersRow();
+
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted("Title");
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(info->GetTitle());
+
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted("Path");
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(path.ToVisualString());
+
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted("Detected type");
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(IdentifiedFileTypeToString(info->fileType));
+
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted("Detected region");
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(GameRegionToString(info->region));
+
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted("HasConfig");
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(BoolStr(info->hasConfig));
+
+				ImGui::EndTable();
+			}
+			ImGui::EndTabItem();
+		}
+		ImGui::EndTabBar();
+	}
+
 	ImGui::End();
 }
 
@@ -608,21 +758,24 @@ static void DrawApctl(ImConfig &cfg) {
 	}
 
 	if (g_Config.bInfrastructureAutoDNS) {
-		if (g_infraDNSConfig.loaded) {
-			if (!g_infraDNSConfig.gameName.empty()) {
-				ImGui::Text("Known game: %s", g_infraDNSConfig.gameName.c_str());
+		const InfraDNSConfig &dnsConfig = GetInfraDNSConfig();
+		if (dnsConfig.loaded) {
+			if (!dnsConfig.gameName.empty()) {
+				ImGui::Text("Known game: %s", dnsConfig.gameName.c_str());
 			}
-			ImGui::Text("connectAdhocForGrouping: %s", BoolStr(g_infraDNSConfig.connectAdHocForGrouping));
-			ImGui::Text("DNS: %s", g_infraDNSConfig.dns.c_str());
-			if (!g_infraDNSConfig.dyn_dns.empty()) {
-				ImGui::Text("DynDNS: %s", g_infraDNSConfig.dyn_dns.c_str());
+			ImGui::Text("connectAdhocForGrouping: %s", BoolStr(dnsConfig.connectAdHocForGrouping));
+			ImGui::Text("DNS: %s", dnsConfig.dns.c_str());
+			if (!dnsConfig.dyn_dns.empty()) {
+				ImGui::Text("DynDNS: %s", dnsConfig.dyn_dns.c_str());
 			}
-			if (!g_infraDNSConfig.fixedDNS.empty()) {
+			if (!dnsConfig.fixedDNS.empty()) {
 				ImGui::TextUnformatted("Fixed DNS");
-				for (auto iter : g_infraDNSConfig.fixedDNS) {
+				for (auto iter : dnsConfig.fixedDNS) {
 					ImGui::Text("%s -> %s", iter.first.c_str(), iter.second.c_str());
 				}
 			}
+		} else {
+			ImGui::TextUnformatted("(InfraDNSConfig not loaded)");
 		}
 	}
 
@@ -662,10 +815,31 @@ static void DrawInternals(ImConfig &cfg) {
 		{DIRECTORY_CUSTOM_THEMES, "CUSTOM_THEMES"},
 	};
 
-	if (ImGui::CollapsingHeader("Directories", ImGuiTreeNodeFlags_DefaultOpen)) {
+	if (ImGui::CollapsingHeader("GetSysDirectory")) {
 		for (auto &dir : dirs) {
 			ImGui::Text("%s: %s", dir.name, GetSysDirectory(dir.dir).c_str());
 		}
+	}
+
+	if (ImGui::CollapsingHeader("Memory")) {
+		ImGui::Text("Base pointer: %p", Memory::base);
+		ImGui::Text("Main memory size: %08x", Memory::g_MemorySize);
+		if (ImGui::Button("Copy to clipboard")) {
+			System_CopyStringToClipboard(StringFromFormat("0x%p", Memory::base));
+		}
+	}
+
+	if (ImGui::CollapsingHeader("ImGui state")) {
+		const auto &io = ImGui::GetIO();
+		ImGui::Text("WantCaptureMouse: %s", BoolStr(io.WantCaptureMouse));
+		ImGui::Text("WantCaptureKeyboard: %s", BoolStr(io.WantCaptureKeyboard));
+		ImGui::Text("WantCaptureMouseUnlessPopupClose: %s", BoolStr(io.WantCaptureMouseUnlessPopupClose));
+		ImGui::Text("WantTextInput: %s", BoolStr(io.WantTextInput));
+	}
+
+	if (ImGui::CollapsingHeader("Save detection")) {
+		ImGui::Text("Last in-game save/load: %0.1f seconds ago", SecondsSinceLastGameSave());
+		ImGui::Text("Last save/load state: %0.1f seconds ago", SaveState::SecondsSinceLastSavestate());
 	}
 
 	ImGui::End();
@@ -684,15 +858,6 @@ static void DrawAdhoc(ImConfig &cfg) {
 	case 2: discoverStatusStr = "COMPLETED"; break;
 	default: break;
 	}
-
-	auto &io = ImGui::GetIO();
-
-	/*
-	ImGui::Text("WantCaptureMouse: %s", BoolStr(io.WantCaptureMouse));
-	ImGui::Text("WantCaptureKeyboard: %s", BoolStr(io.WantCaptureKeyboard));
-	ImGui::Text("WantCaptureMouseUnlessPopupClose: %s", BoolStr(io.WantCaptureMouseUnlessPopupClose));
-	ImGui::Text("WantTextInput: %s", BoolStr(io.WantTextInput));
-	*/
 
 	ImGui::Text("sceNetAdhoc inited: %s", BoolStr(netAdhocInited));
 	ImGui::Text("sceNetAdhocctl inited: %s", BoolStr(netAdhocctlInited));
@@ -793,12 +958,13 @@ static void DrawSockets(ImConfig &cfg) {
 }
 
 static const char *MemCheckConditionToString(MemCheckCondition cond) {
-	switch (cond) {
-	case MEMCHECK_READ: return "Read";
-	case MEMCHECK_WRITE: return "Write";
-	case MEMCHECK_READWRITE: return "Read/Write";
-	case MEMCHECK_WRITE | MEMCHECK_WRITE_ONCHANGE: return "Write Change";
-	case MEMCHECK_READWRITE | MEMCHECK_WRITE_ONCHANGE: return "Read/Write Change";
+	// (int) casting to avoid "case not in enum" warnings
+	switch ((int)cond) {
+	case (int)MEMCHECK_READ: return "Read";
+	case (int)MEMCHECK_WRITE: return "Write";
+	case (int)MEMCHECK_READWRITE: return "Read/Write";
+	case (int)(MEMCHECK_WRITE | MEMCHECK_WRITE_ONCHANGE): return "Write Change";
+	case (int)(MEMCHECK_READWRITE | MEMCHECK_WRITE_ONCHANGE): return "Read/Write Change";
 	default:
 		return "(bad!)";
 	}
@@ -854,8 +1020,9 @@ static void DrawBreakpointsView(MIPSDebugInterface *mipsDebug, ImConfig &cfg) {
 				ImGui::TableNextRow();
 				ImGui::TableNextColumn();
 				ImGui::PushID(i);
-				// TODO: This clashes with the checkbox!
-				if (ImGui::Selectable("", cfg.selectedBreakpoint == i, ImGuiSelectableFlags_SpanAllColumns) && !bp.temporary) {
+				// DONE: This clashes with the checkbox!
+				// TODO: Test to make sure this works properly
+				if (ImGui::Selectable("", cfg.selectedBreakpoint == i, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap) && !bp.temporary) {
 					cfg.selectedBreakpoint = i;
 					cfg.selectedMemCheck = -1;
 				}
@@ -892,7 +1059,7 @@ static void DrawBreakpointsView(MIPSDebugInterface *mipsDebug, ImConfig &cfg) {
 				ImGui::TableNextRow();
 				ImGui::TableNextColumn();
 				ImGui::PushID(i + 10000);
-				if (ImGui::Selectable("", cfg.selectedMemCheck == i, ImGuiSelectableFlags_SpanAllColumns)) {
+				if (ImGui::Selectable("##memcheck", cfg.selectedMemCheck == i, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) {
 					cfg.selectedBreakpoint = -1;
 					cfg.selectedMemCheck = i;
 				}
@@ -937,9 +1104,24 @@ static void DrawBreakpointsView(MIPSDebugInterface *mipsDebug, ImConfig &cfg) {
 			if (ImGui::BeginChild("mc_edit")) {
 				auto &mc = mcs[cfg.selectedMemCheck];
 				ImGui::TextUnformatted("Edit memcheck");
+				if (ImGui::BeginCombo("Condition", MemCheckConditionToString(mc.cond))) {
+					if (ImGui::Selectable("Read", mc.cond == MemCheckCondition::MEMCHECK_READ)) {
+						mc.cond = MemCheckCondition::MEMCHECK_READ;
+					}
+					if (ImGui::Selectable("Write", mc.cond == MemCheckCondition::MEMCHECK_WRITE)) {
+						mc.cond = MemCheckCondition::MEMCHECK_WRITE;
+					}
+					if (ImGui::Selectable("Read / Write", mc.cond == MemCheckCondition::MEMCHECK_READWRITE)) {
+						mc.cond = MemCheckCondition::MEMCHECK_READWRITE;
+					}
+					if (ImGui::Selectable("Write On Change", mc.cond == MemCheckCondition::MEMCHECK_WRITE_ONCHANGE)) {
+						mc.cond = MemCheckCondition::MEMCHECK_WRITE_ONCHANGE;
+					}
+					ImGui::EndCombo();
+				}
 				ImGui::CheckboxFlags("Enabled", (int *)&mc.result, (int)BREAK_ACTION_PAUSE);
-				ImGui::InputScalar("Start", ImGuiDataType_U32, &mc.start);
-				ImGui::InputScalar("End", ImGuiDataType_U32, &mc.end);
+				ImGui::InputScalar("Start", ImGuiDataType_U32, &mc.start, NULL, NULL, "%08x", ImGuiInputTextFlags_CharsHexadecimal);
+				ImGui::InputScalar("End", ImGuiDataType_U32, &mc.end, NULL, NULL, "%08x", ImGuiInputTextFlags_CharsHexadecimal);
 				if (ImGui::Button("Delete")) {
 					g_breakpoints.RemoveMemCheck(mcs[cfg.selectedMemCheck].start, mcs[cfg.selectedMemCheck].end);
 				}
@@ -952,50 +1134,122 @@ static void DrawBreakpointsView(MIPSDebugInterface *mipsDebug, ImConfig &cfg) {
 	ImGui::End();
 }
 
-void DrawAudioDecodersView(ImConfig &cfg, ImControl &control) {
-	if (!ImGui::Begin("Audio decoding contexts", &cfg.audioDecodersOpen)) {
+void DrawMediaDecodersView(ImConfig &cfg, ImControl &control) {
+	if (!ImGui::Begin("Media decoding contexts", &cfg.mediaDecodersOpen)) {
 		ImGui::End();
 		return;
 	}
 
-	if (ImGui::CollapsingHeader("sceAtrac", ImGuiTreeNodeFlags_DefaultOpen)) {
-		if (ImGui::BeginTable("atracs", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
+	const std::map<u32, MpegContext *> &mpegCtxs = __MpegGetContexts();
+	if (ImGui::CollapsingHeaderWithCount("sceMpeg", (int)mpegCtxs.size())) {
+		if (ImGui::BeginTable("mpegs", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
+			ImGui::TableSetupColumn("Addr", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("VFrames", ImGuiTableColumnFlags_WidthFixed);
+
+			ImGui::TableHeadersRow();
+			for (auto iter : mpegCtxs) {
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::PushID(iter.first);
+				ImGui::SetNextItemAllowOverlap();
+				char temp[16];
+				snprintf(temp, sizeof(temp), "%08x", iter.first);
+				if (ImGui::Selectable(temp, iter.first == cfg.selectedMpegCtx, ImGuiSelectableFlags_SpanAllColumns)) {
+					cfg.selectedMpegCtx = iter.first;
+				}
+				ImGui::TableNextColumn();
+				const MpegContext *ctx = iter.second;
+				if (!ctx) {
+					ImGui::TextUnformatted("N/A");
+					ImGui::PopID();
+					continue;
+				}
+				ImGui::Text("%d", ctx->videoFrameCount);
+				ImGui::PopID();
+			}
+			ImGui::EndTable();
+		}
+
+		auto iter = mpegCtxs.find(cfg.selectedMpegCtx);
+		if (iter != mpegCtxs.end()) {
+			const MpegContext *ctx = iter->second;
+			char temp[28];
+			snprintf(temp, sizeof(temp), "sceMpeg context at %08x", iter->first);
+			if (ctx && ImGui::CollapsingHeader(temp, ImGuiTreeNodeFlags_DefaultOpen)) {
+				// ImGui::ProgressBar((float)sas->CurPos() / (float)info.fileDataEnd, ImVec2(200.0f, 0.0f));
+				ImGui::Text("Mpeg version: %d raw: %08x", ctx->mpegVersion, ctx->mpegRawVersion);
+				ImGui::Text("Frame counts: Audio %d, video %d", ctx->audioFrameCount, ctx->videoFrameCount);
+				ImGui::Text("Video pixel mode: %d", ctx->videoPixelMode);
+				ImGui::Text("AVC status=%d width=%d height=%d result=%d", ctx->avc.avcFrameStatus, ctx->avc.avcDetailFrameWidth, ctx->avc.avcDetailFrameHeight, ctx->avc.avcDecodeResult);
+				ImGui::Text("Stream size: %d", ctx->mpegStreamSize);
+			}
+		}
+	}
+
+	// Count the active atrac contexts so we can display it.
+	const int maxAtracContexts = __AtracMaxContexts();
+	int atracCount = 0;
+	for (int i = 0; i < maxAtracContexts; i++) {
+		u32 type;
+		if (__AtracGetCtx(i, &type)) {
+			atracCount++;
+		}
+	}
+
+	if (ImGui::CollapsingHeaderWithCount("sceAtrac", atracCount, ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::Checkbox("Force FFMPEG", &g_Config.bForceFfmpegForAudioDec);
+		if (ImGui::BeginTable("atracs", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
 			ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("Mute", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("Channels", ImGuiTableColumnFlags_WidthFixed);
-			ImGui::TableSetupColumn("CurrentSample", ImGuiTableColumnFlags_WidthFixed);
-			ImGui::TableSetupColumn("RemainingFrames", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("CurSample", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("RemFrames", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("Impl", ImGuiTableColumnFlags_WidthFixed);
 
 			ImGui::TableHeadersRow();
-
-			for (int i = 0; i < PSP_MAX_ATRAC_IDS; i++) {
-				u32 type = 0;
-				const AtracBase *ctx = __AtracGetCtx(i, &type);
-				if (!ctx) {
-					continue;
-				}
+			for (int i = 0; i < maxAtracContexts; i++) {
+				u32 codecType = 0;
 
 				ImGui::TableNextRow();
 				ImGui::TableNextColumn();
+				ImGui::PushID(i);
+				ImGui::SetNextItemAllowOverlap();
 				char temp[16];
 				snprintf(temp, sizeof(temp), "%d", i);
 				if (ImGui::Selectable(temp, i == cfg.selectedAtracCtx, ImGuiSelectableFlags_SpanAllColumns)) {
 					cfg.selectedAtracCtx = i;
 				}
 				ImGui::TableNextColumn();
-				switch (type) {
-				case PSP_MODE_AT_3_PLUS:
+				bool *mutePtr = __AtracMuteFlag(i);
+				if (mutePtr) {
+					ImGui::Checkbox("", mutePtr);
+				}
+				ImGui::TableNextColumn();
+
+				const AtracBase *ctx = __AtracGetCtx(i, &codecType);
+				if (!ctx) {
+					// Nothing more we can display about uninitialized contexts.
+					ImGui::PopID();
+					continue;
+				}
+
+				switch (codecType) {
+				case 0:
+					ImGui::TextUnformatted("-");  // Uninitialized
+					break;
+				case PSP_CODEC_AT3PLUS:
 					ImGui::TextUnformatted("Atrac3+");
 					break;
-				case PSP_MODE_AT_3:
+				case PSP_CODEC_AT3:
 					ImGui::TextUnformatted("Atrac3");
 					break;
 				default:
-					ImGui::Text("%04x", type);
+					ImGui::Text("%04x", codecType);
 					break;
 				}
+
 				ImGui::TableNextColumn();
 				ImGui::TextUnformatted(AtracStatusToString(ctx->BufferState()));
 				ImGui::TableNextColumn();
@@ -1016,6 +1270,7 @@ void DrawAudioDecodersView(ImConfig &cfg, ImControl &control) {
 				}
 				ImGui::TableNextColumn();
 				ImGui::TextUnformatted(ctx->GetContextVersion() >= 2 ? "NewImpl" : "Legacy");
+				ImGui::PopID();
 			}
 
 			ImGui::EndTable();
@@ -1028,14 +1283,15 @@ void DrawAudioDecodersView(ImConfig &cfg, ImControl &control) {
 			char header[32];
 			snprintf(header, sizeof(header), "Atrac context %d", cfg.selectedAtracCtx);
 			if (ctx && ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen)) {
-				int pos;
-				ctx->GetNextDecodePosition(&pos);
-				int endSample, loopStart, loopEnd;
-				ctx->GetSoundSample(&endSample, &loopStart, &loopEnd);
-				ImGui::ProgressBar((float)pos / (float)endSample, ImVec2(200.0f, 0.0f));
-				ImGui::Text("Status: %s", AtracStatusToString(ctx->BufferState()));
-				if (ctx->BufferState() <= ATRAC_STATUS_STREAMED_LOOP_WITH_TRAILER) {
-					ImGui::Text("cur/end sample: %d/%d/%d", pos, endSample);
+				bool isNormal = AtracStatusIsNormal(ctx->BufferState());
+				if (isNormal) {
+					int pos;
+					ctx->GetNextDecodePosition(&pos);
+					int endSample, loopStart, loopEnd;
+					ctx->GetSoundSample(&endSample, &loopStart, &loopEnd);
+					ImGui::ProgressBar((float)pos / (float)endSample, ImVec2(200.0f, 0.0f));
+					ImGui::Text("Status: %s", AtracStatusToString(ctx->BufferState()));
+					ImGui::Text("cur/end sample: %d/%d", pos, endSample);
 				}
 				if (ctx->context_.IsValid()) {
 					ImGui::Text("ctx addr: ");
@@ -1044,32 +1300,147 @@ void DrawAudioDecodersView(ImConfig &cfg, ImControl &control) {
 				}
 				if (ctx->context_.IsValid() && ctx->GetContextVersion() >= 2) {
 					const auto &info = ctx->context_->info;
-					ImGui::Text("Buffer: (size: %d / %08x) Frame: %d", info.bufferByte, info.bufferByte, info.sampleSize);
-					ImGui::SameLine();
-					ImClickableValue("buffer", info.buffer, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
-					if (info.secondBuffer || info.secondBufferByte) {
-						ImGui::Text("Second: (size: %d / %08x)", info.secondBufferByte, info.secondBufferByte);
+					if (isNormal) {
+						ImGui::Text("Buffer: (size: %d / %08x) Frame: %d", info.bufferByte, info.bufferByte, info.sampleSize);
 						ImGui::SameLine();
-						ImClickableValue("second", info.secondBuffer, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
+						ImClickableValue("buffer", info.buffer, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
+						if (info.secondBuffer || info.secondBufferByte) {
+							ImGui::Text("Second: (size: %d / %08x)", info.secondBufferByte, info.secondBufferByte);
+							ImGui::SameLine();
+							ImClickableValue("second", info.secondBuffer, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
+						}
+						ImGui::Text("Data: %d/%d", info.dataOff, info.fileDataEnd);
+						if (info.state != ATRAC_STATUS_STREAMED_WITHOUT_LOOP) {
+							ImGui::Text("LoopNum: %d (%d-%d)", info.loopNum, info.loopStart, info.loopEnd);
+						}
+						ImGui::Text("DecodePos: %d EndSample: %d", info.decodePos, info.fileDataEnd);
+						if (AtracStatusIsStreaming(info.state)) {
+							ImGui::Text("Stream: offset %d, streamDataBytes: %d", info.streamOff, info.streamDataByte);
+						}
+						ImGui::Text("numFrame: %d curBuffer: %d streamOff2: %d", info.numSkipFrames, info.curBuffer, info.secondStreamOff);
+					} else if (ctx->BufferState() == ATRAC_STATUS_FOR_SCESAS) {
+						// A different set of state!
+						const AtracSasStreamState *sas = ctx->StreamStateForSas();
+						if (sas) {
+							ImGui::ProgressBar((float)sas->CurPos() / (float)info.fileDataEnd, ImVec2(200.0f, 0.0f));
+							ImGui::ProgressBar((float)sas->streamOffset / (float)sas->bufSize[sas->curBuffer], ImVec2(200.0f, 0.0f));
+							ImGui::Text("Cur pos: %08x File offset: %08x File end: %08x%s", sas->CurPos(), sas->fileOffset, info.fileDataEnd, sas->fileOffset >= info.fileDataEnd ? " (END)" : "");
+							ImGui::Text("Second (next buffer): %08x (sz: %08x)", info.secondBuffer, info.secondBufferByte);
+							ImGui::Text("Cur buffer: %d (%08x, sz: %08x)", sas->curBuffer, sas->bufPtr[sas->curBuffer], sas->bufSize[sas->curBuffer]);
+							ImGui::Text("2nd buffer: %d (%08x, sz: %08x)", sas->curBuffer ^ 1, sas->bufPtr[sas->curBuffer ^ 1], sas->bufSize[sas->curBuffer ^ 1]);
+							ImGui::Text("Loop points: %08x, %08x", info.loopStart, info.loopEnd);
+							ImGui::TextUnformatted(sas->isStreaming ? "Streaming mode!" : "Non-streaming mode");
+						} else {
+							ImGui::Text("can't access sas state");
+						}
 					}
-					ImGui::Text("Data: %d/%d", info.dataOff, info.fileDataEnd);
-					if (info.state != ATRAC_STATUS_STREAMED_WITHOUT_LOOP) {
-						ImGui::Text("LoopNum: %d (%d-%d)", info.loopNum, info.loopStart, info.loopEnd);
+
+					if (ctx->BufferState() == ATRAC_STATUS_ALL_DATA_LOADED) {
+						if (ImGui::Button("Save to disk...")) {
+							System_BrowseForFileSave(cfg.requesterToken, "Save AT3 file", "song.at3", BrowseFileType::ATRAC3, [=](const std::string &filename, int) {
+								const u8 *data = Memory::GetPointerRange(info.buffer, info.bufferByte);
+								if (!data) {
+									return;
+								}
+								FILE *file = File::OpenCFile(Path(filename), "wb");
+								if (!file) {
+									return;
+								}
+								fwrite(data, 1, info.bufferByte, file);
+								fclose(file);
+							});
+						}
 					}
-					ImGui::Text("DecodePos: %d EndSample: %d", info.decodePos, info.fileDataEnd);
-					if (AtracStatusIsStreaming(info.state)) {
-						ImGui::Text("Stream: offset %d, streamDataBytes: %d", info.streamOff, info.streamDataByte);
-					}
-					// Display unknown vars.
-					ImGui::Text("numFrame: %d curBuffer: %d streamOff2: %d", info.numSkipFrames, info.curBuffer, info.secondStreamOff);
-				} else {
+				} else  {
 					ImGui::Text("loop: %d", ctx->LoopNum());
 				}
 			}
 		}
 	}
 
-	if (ImGui::CollapsingHeader("sceAudiocodec", ImGuiTreeNodeFlags_DefaultOpen)) {
+	if (ImGui::CollapsingHeaderWithCount("sceMp3", (int)g_mp3Map.size(), ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (ImGui::BeginTable("mp3", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
+			ImGui::TableSetupColumn("Handle", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("Channels", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("ReadPos", ImGuiTableColumnFlags_WidthFixed);
+
+			for (auto &iter : g_mp3Map) {
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::PushID(iter.first);
+				ImGui::SetNextItemAllowOverlap();
+				char temp[16];
+				snprintf(temp, sizeof(temp), "%d", iter.first);
+				if (ImGui::Selectable(temp, iter.first == cfg.selectedMp3Ctx, ImGuiSelectableFlags_SpanAllColumns)) {
+					cfg.selectedMp3Ctx = iter.first;
+				}
+				if (!iter.second) {
+					continue;
+				}
+				ImGui::TableNextColumn();
+				ImGui::Text("%d", iter.second->Channels);
+				ImGui::TableNextColumn();
+				ImGui::Text("%d", (int)iter.second->ReadPos());
+				ImGui::PopID();
+			}
+			ImGui::EndTable();
+		}
+
+		auto iter = g_mp3Map.find(cfg.selectedMp3Ctx);
+		if (iter != g_mp3Map.end() && ImGui::CollapsingHeader("MP3 %d", iter->first)) {
+			ImGui::Text("MP3 Context %d", iter->first);
+			if (iter->second) {
+				AuCtx *ctx = iter->second;
+				ImGui::Text("%d Hz, %d channels", ctx->SamplingRate, ctx->Channels);
+				ImGui::Text("AUBuf: %08x AUSize: %08x", ctx->AuBuf, ctx->AuBufSize);
+				ImGui::Text("PCMBuf: %08x PCMSize: %08x", ctx->PCMBuf, ctx->PCMBufSize);
+				ImGui::Text("Pos: %d (%d -> %d)", ctx->ReadPos(), (int)ctx->startPos, (int)ctx->endPos);
+			}
+		}
+	}
+
+	if (ImGui::CollapsingHeaderWithCount("sceAac", (int)g_aacMap.size(), ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (ImGui::BeginTable("aac", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
+			ImGui::TableSetupColumn("Handle", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("Channels", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("ReadPos", ImGuiTableColumnFlags_WidthFixed);
+
+			for (auto &iter : g_aacMap) {
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::PushID(iter.first);
+				ImGui::SetNextItemAllowOverlap();
+				char temp[16];
+				snprintf(temp, sizeof(temp), "%d", iter.first);
+				if (ImGui::Selectable(temp, iter.first == cfg.selectedAacCtx, ImGuiSelectableFlags_SpanAllColumns)) {
+					cfg.selectedAacCtx = iter.first;
+				}
+				if (!iter.second) {
+					continue;
+				}
+				ImGui::TableNextColumn();
+				ImGui::Text("%d", iter.second->Channels);
+				ImGui::TableNextColumn();
+				ImGui::Text("%d", (int)iter.second->ReadPos());
+				ImGui::PopID();
+			}
+			ImGui::EndTable();
+		}
+
+		auto iter = g_mp3Map.find(cfg.selectedAacCtx);
+		if (iter != g_mp3Map.end() && ImGui::CollapsingHeader("AAC %d", iter->first)) {
+			ImGui::Text("AAC Context %d", iter->first);
+			if (iter->second) {
+				AuCtx *ctx = iter->second;
+				ImGui::Text("%d Hz, %d channels", ctx->SamplingRate, ctx->Channels);
+				ImGui::Text("AUBuf: %08x AUSize: %08x", ctx->AuBuf, ctx->AuBufSize);
+				ImGui::Text("PCMBuf: %08x PCMSize: %08x", ctx->PCMBuf, ctx->PCMBufSize);
+				ImGui::Text("Pos: %d (%d -> %d)", ctx->ReadPos(), (int)ctx->startPos, (int)ctx->endPos);
+			}
+		}
+	}
+
+	if (ImGui::CollapsingHeaderWithCount("sceAudiocodec", (int)g_audioDecoderContexts.size(), ImGuiTreeNodeFlags_DefaultOpen)) {
 		if (ImGui::BeginTable("codecs", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
 			ImGui::TableSetupColumn("CtxAddr", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed);
@@ -1091,27 +1462,37 @@ void DrawAudioDecodersView(ImConfig &cfg, ImControl &control) {
 		}
 	}
 
-	if (ImGui::CollapsingHeader("sceMp3", ImGuiTreeNodeFlags_DefaultOpen)) {
-		if (ImGui::BeginTable("mp3", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
-			ImGui::TableSetupColumn("Handle", ImGuiTableColumnFlags_WidthFixed);
-			ImGui::TableSetupColumn("Channels", ImGuiTableColumnFlags_WidthFixed);
-			ImGui::TableSetupColumn("StartPos", ImGuiTableColumnFlags_WidthFixed);
-			// TODO: more..
+	ImGui::End();
+}
 
-			for (auto &iter : mp3Map) {
-				ImGui::TableNextRow();
-				ImGui::TableNextColumn();
-				ImGui::Text("%d", iter.first);
-				if (!iter.second) {
-					continue;
-				}
-				ImGui::TableNextColumn();
-				ImGui::Text("%d", iter.second->Channels);
-				ImGui::TableNextColumn();
-				ImGui::Text("%d", (int)iter.second->startPos);
-			}
-			ImGui::EndTable();
-		}
+
+void DrawAudioOut(ImConfig &cfg, ImControl &control) {
+	if (!ImGui::Begin("Audio output", &cfg.audioOutOpen)) {
+		ImGui::End();
+		return;
+	}
+
+	if (g_Config.iAudioPlaybackMode == (int)AudioSyncMode::GRANULAR) {
+		// Show granular stats
+		GranularStats stats;
+		g_granular.GetStats(&stats);
+		ImGui::Text("Granules");
+		ImGui::Text("Read size: %0.2f", stats.smoothedReadSize);
+		ImGui::Text("Frame time estimate: %0.1f ms", stats.frameTimeEstimate * 1000.0f);
+		ImGui::Text("Queued samples target: %d", stats.queuedSamplesTarget);
+		ImGui::Text("Queued min/max: %d / %d", stats.queuedGranulesMin, stats.queuedGranulesMax);
+		ImGui::Text("Queued (smooth): %0.3f", stats.smoothedQueuedGranules);
+		ImGui::Text("Target: %d", stats.targetQueueSize);
+		ImGui::Text("Max: %d", stats.maxQueuedGranules);
+		ImGui::Text("Computed queue latency: %d ms", (int)(stats.smoothedQueuedGranules * (GranularMixer::GRANULE_SIZE * 1000.0 / 44100.0)));
+		ImGui::Text("Fade volume: %0.2f", stats.fadeVolume);
+		ImGui::Text("Looping: %s", BoolStr(stats.looping));
+		ImGui::Text("Under/Over: %d / %d", stats.underruns, stats.overruns);
+	} else {
+		ImGui::Text("StereoResampler classic");
+		char buf[1024];
+		g_resampler.GetAudioDebugStats(buf, sizeof(buf));
+		ImGui::Text("%s", buf);
 	}
 
 	ImGui::End();
@@ -1123,8 +1504,9 @@ void DrawAudioChannels(ImConfig &cfg, ImControl &control) {
 		return;
 	}
 
-	if (ImGui::BeginTable("audios", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
+	if (ImGui::BeginTable("audios", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
 		ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_WidthFixed);
+		ImGui::TableSetupColumn("Mute", ImGuiTableColumnFlags_WidthFixed);
 		ImGui::TableSetupColumn("SampleAddr", ImGuiTableColumnFlags_WidthFixed);
 		ImGui::TableSetupColumn("SampleCount", ImGuiTableColumnFlags_WidthFixed);
 		ImGui::TableSetupColumn("Volume", ImGuiTableColumnFlags_WidthFixed);
@@ -1135,26 +1517,29 @@ void DrawAudioChannels(ImConfig &cfg, ImControl &control) {
 
 		// vaudio / output2 uses channel 8.
 		for (int i = 0; i < PSP_AUDIO_CHANNEL_MAX + 1; i++) {
-			if (!chans[i].reserved) {
+			if (!g_audioChans[i].reserved) {
 				continue;
 			}
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn();
+			ImGui::PushID(i);
 			if (i == 8) {
 				ImGui::TextUnformatted("audio2");
 			} else {
 				ImGui::Text("%d", i);
 			}
 			ImGui::TableNextColumn();
+			ImGui::Checkbox("", &g_audioChans[i].mute);
+			ImGui::TableNextColumn();
 			char id[2]{};
 			id[0] = i + 1;
-			ImClickableValue(id, chans[i].sampleAddress, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
+			ImClickableValue(id, g_audioChans[i].sampleAddress, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
 			ImGui::TableNextColumn();
-			ImGui::Text("%08x", chans[i].sampleCount);
+			ImGui::Text("%08x", g_audioChans[i].sampleCount);
 			ImGui::TableNextColumn();
-			ImGui::Text("%d | %d", chans[i].leftVolume, chans[i].rightVolume);
+			ImGui::Text("%d | %d", g_audioChans[i].leftVolume, g_audioChans[i].rightVolume);
 			ImGui::TableNextColumn();
-			switch (chans[i].format) {
+			switch (g_audioChans[i].format) {
 			case PSP_AUDIO_FORMAT_STEREO:
 				ImGui::TextUnformatted("Stereo");
 				break;
@@ -1166,16 +1551,71 @@ void DrawAudioChannels(ImConfig &cfg, ImControl &control) {
 				break;
 			}
 			ImGui::TableNextColumn();
-			for (auto t : chans[i].waitingThreads) {
+			for (auto t : g_audioChans[i].waitingThreads) {
 				KernelObject *thread = kernelObjects.GetFast<KernelObject>(t.threadID);
 				if (thread) {
 					ImGui::Text("%s: %d", thread->GetName(), t.numSamples);
 				}
 			}
+			ImGui::PopID();
 		}
 
 		ImGui::EndTable();
 	}
+	ImGui::End();
+}
+
+void ImLogWindow::Draw(ImConfig &cfg) {
+	ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
+	if (!ImGui::Begin("Log", &cfg.logOpen)) {
+		ImGui::End();
+		return;
+	}
+
+	const RingbufferLog &ring = g_logManager.GetRingbuffer();
+
+	// Options menu
+	if (ImGui::BeginPopup("Options")) {
+		ImGui::Checkbox("Auto-scroll", &AutoScroll);
+		ImGui::EndPopup();
+	}
+
+	// Main window
+	if (ImGui::Button("Options"))
+		ImGui::OpenPopup("Options");
+	ImGui::SameLine();
+	bool copy = ImGui::Button("Copy");
+	ImGui::Separator();
+
+	if (ImGui::BeginChild("scrolling", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
+		if (copy)
+			ImGui::LogToClipboard();
+
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
+
+		ImGuiListClipper clipper;
+		clipper.Begin(ring.GetCount());
+		while (clipper.Step()) {
+			for (int line_no = clipper.DisplayStart; line_no < clipper.DisplayEnd; line_no++) {
+				int n = ring.GetCount() - 1 - line_no;
+
+				const std::string_view line = ring.TextAt(n);
+				const LogLevel level = ring.LevelAt(n);
+				const u32 color = 0xFF000000 | LogManager::GetLevelColor(level);
+				ImGui::PushStyleColor(ImGuiCol_Text, color);
+				ImGui::TextUnformatted(line);
+				ImGui::PopStyleColor();
+			}
+		}
+		clipper.End();
+		ImGui::PopStyleVar();
+
+		// Keep up at the bottom of the scroll region if we were already at the bottom at the beginning of the frame.
+		// Using a scrollbar or mouse-wheel will take away from the bottom edge.
+		if (AutoScroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 20)
+			ImGui::SetScrollHereY(1.0f);
+	}
+	ImGui::EndChild();
 	ImGui::End();
 }
 
@@ -1259,6 +1699,8 @@ void DrawSasAudio(ImConfig &cfg) {
 		return;
 	}
 
+	ImGui::Checkbox("Mute", __SasGetGlobalMuteFlag());
+	ImGui::SameLine();
 	ImGui::Checkbox("Show all voices", &cfg.sasShowAllVoices);
 
 	if (ImGui::BeginTable("saschannels", 9, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
@@ -1306,7 +1748,7 @@ void DrawSasAudio(ImConfig &cfg) {
 			case VOICETYPE_OFF: ImGui::TextUnformatted("(off)"); break;
 			case VOICETYPE_VAG: ImGui::Text("%08x", voice.vagAddr); break;
 			case VOICETYPE_PCM: ImGui::Text("%08x", voice.pcmAddr); break;
-			case VOICETYPE_ATRAC3: ImGui::Text("atrac: %d", voice.atrac3.id()); break;
+			case VOICETYPE_ATRAC3: ImGui::Text("atrac: %d", voice.atrac3.AtracID()); break;
 			default:
 				ImGui::TextUnformatted("N/A");
 				break;
@@ -1417,8 +1859,8 @@ static void DrawUtilityModules(ImConfig &cfg, ImControl &control) {
 			ImGui::PushID(i);
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn();
-			if (ImGui::Selectable(info->name, cfg.selectedModule == i, ImGuiSelectableFlags_SpanAllColumns)) {
-				cfg.selectedModule = i;
+			if (ImGui::Selectable(info->name, cfg.selectedUtilityModule == i, ImGuiSelectableFlags_SpanAllColumns)) {
+				cfg.selectedUtilityModule = i;
 			}
 			ImGui::TableNextColumn();
 			if (loadedAddr) {
@@ -1443,7 +1885,115 @@ static void DrawModules(const MIPSDebugInterface *debug, ImConfig &cfg, ImContro
 		return;
 	}
 
-	// Hm, this reads from the symbol map.
+	ImGui::TextUnformatted("This shows modules that have been loaded by the game (not plain HLE)");
+
+	if (ImGui::BeginChild("module_list", ImVec2(170.0f, 0.0), ImGuiChildFlags_ResizeX)) {
+		if (ImGui::BeginTable("modules", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
+			ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableHeadersRow();
+
+			// TODO: Add context menu and clickability
+			kernelObjects.Iterate<PSPModule>([&cfg](int id, PSPModule *module) -> bool {
+				ImGui::PushID(id);
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				if (ImGui::Selectable(module->GetName(), cfg.selectedModuleId == id, ImGuiSelectableFlags_SpanAllColumns)) {
+					cfg.selectedModuleId = id;
+				}
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(module->isFake ? "FAKE/HLE" : "normal");
+				ImGui::PopID();
+				return true;
+			});
+
+			ImGui::EndTable();
+		}
+		ImGui::EndChild();
+	}
+	ImGui::SameLine();
+
+	if (ImGui::BeginChild("info")) {
+		if (kernelObjects.Is<PSPModule>(cfg.selectedModuleId)) {
+			PSPModule *mod = kernelObjects.GetFast<PSPModule>(cfg.selectedModuleId);
+			if (mod) {
+				if (mod->isFake) {
+					ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 255, 255, 170));
+				}
+				ImGui::Text("%s %d.%d (%s)\n", mod->GetName(), mod->nm.version[1], mod->nm.version[0], mod->isFake ? "FAKE/HLE" : "normal");
+				ImGui::Text("Attr: %08x (%s)\n", mod->nm.attribute, (mod->nm.attribute & 0x1000) ? "Kernel" : "User");
+				char buf[512];
+				mod->GetLongInfo(buf, sizeof(buf));
+				ImGui::TextUnformatted(buf);
+				if (mod->isFake) {
+					ImGui::PopStyleColor();
+				}
+				if (!mod->impModuleNames.empty() && ImGui::CollapsingHeader("Imported modules")) {
+					for (auto &name : mod->impModuleNames) {
+						ImGui::TextUnformatted(name);
+					}
+				}
+				if (!mod->expModuleNames.empty() && ImGui::CollapsingHeader("Exported modules")) {
+					for (auto &name : mod->expModuleNames) {
+						ImGui::TextUnformatted(name);
+					}
+				}
+				if (!mod->importedFuncs.empty() || !mod->importedVars.empty()) {
+					if (ImGui::CollapsingHeader("Imports")) {
+						if (!mod->importedVars.empty() && ImGui::CollapsingHeader("Vars")) {
+							for (auto &var : mod->importedVars) {
+								ImGui::TextUnformatted("(some var)");  // TODO
+							}
+						}
+						for (auto &import : mod->importedFuncs) {
+							// Look the name up in our HLE database.
+							const HLEFunction *func = GetHLEFunc(import.moduleName, import.nid);
+							ImGui::TextUnformatted(import.moduleName);
+							if (func) {
+								ImGui::SameLine();
+								ImGui::TextUnformatted(func->name);
+							}
+							ImGui::SameLine(); ImClickableValue("addr", import.stubAddr, control, ImCmd::SHOW_IN_CPU_DISASM);
+						}
+					}
+				}
+				if (!mod->exportedFuncs.empty() || !mod->exportedVars.empty()) {
+					if (ImGui::CollapsingHeader("Exports")) {
+						if (!mod->exportedVars.empty() && ImGui::CollapsingHeader("Vars")) {
+							for (auto &var : mod->importedVars) {
+								ImGui::TextUnformatted("(some var)");  // TODO
+							}
+						}
+						for (auto &exportFunc : mod->exportedFuncs) {
+							// Look the name up in our HLE database.
+							const HLEFunction *func = GetHLEFunc(exportFunc.moduleName, exportFunc.nid);
+							ImGui::TextUnformatted(exportFunc.moduleName);
+							if (func) {
+								ImGui::SameLine();
+								ImGui::TextUnformatted(func->name);
+							}
+							ImGui::SameLine(); ImClickableValue("addr", exportFunc.symAddr, control, ImCmd::SHOW_IN_CPU_DISASM);
+						}
+					}
+				}
+			}
+		} else {
+			ImGui::TextUnformatted("(no module selected)");
+		}
+		ImGui::EndChild();
+	}
+	ImGui::End();
+}
+
+// Started as a module browser but really only draws from the symbols database, so let's
+// evolve it to that.
+static void DrawSymbols(const MIPSDebugInterface *debug, ImConfig &cfg, ImControl &control) {
+	if (!ImGui::Begin("Symbols", &cfg.symbolsOpen) || !g_symbolMap) {
+		ImGui::End();
+		return;
+	}
+
+	// Reads from the symbol map.
 	std::vector<LoadedModuleInfo> modules = g_symbolMap->getAllModules();
 	if (ImGui::BeginTable("modules", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
 		ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);
@@ -1459,8 +2009,8 @@ static void DrawModules(const MIPSDebugInterface *debug, ImConfig &cfg, ImContro
 			ImGui::PushID(i);
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn();
-			if (ImGui::Selectable(module.name.c_str(), cfg.selectedModule == i, ImGuiSelectableFlags_SpanAllColumns)) {
-				cfg.selectedModule = i;
+			if (ImGui::Selectable(module.name.c_str(), cfg.selectedSymbolModule == i, ImGuiSelectableFlags_SpanAllColumns)) {
+				cfg.selectedSymbolModule = i;
 			}
 			ImGui::TableNextColumn();
 			ImClickableValue("addr", module.address, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
@@ -1474,10 +2024,144 @@ static void DrawModules(const MIPSDebugInterface *debug, ImConfig &cfg, ImContro
 		ImGui::EndTable();
 	}
 
-	if (cfg.selectedModule >= 0 && cfg.selectedModule < (int)modules.size()) {
+	if (cfg.selectedModuleId >= 0 && cfg.selectedModuleId < (int)modules.size()) {
 		// TODO: Show details
 	}
 	ImGui::End();
+}
+
+ImWatchWindow::ImWatchWindow() {}
+
+void ImWatchWindow::Draw(ImConfig &cfg, ImControl &control, MIPSDebugInterface *mipsDebug) {
+	if (!ImGui::Begin("Watch", &cfg.watchOpen) || !g_symbolMap) {
+		ImGui::End();
+		return;
+	}
+
+	// Refresh watches
+	int steppingCounter = Core_GetSteppingCounter();
+	int changes = false;
+	for (auto &watch : watches_) {
+		if (watch.steppingCounter != steppingCounter) {
+			watch.lastValue = watch.currentValue;
+			watch.steppingCounter = steppingCounter;
+		}
+
+		uint32_t prevValue = watch.currentValue;
+		watch.evaluateFailed = !parseExpression(mipsDebug, watch.expression, watch.currentValue);
+	}
+
+	if (ImGui::Button("Add Watch")) {
+		watches_.push_back(WatchInfo("untitled", "[0x88000000]", mipsDebug));
+	}
+
+	if (ImGui::BeginTable("watches", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH | ImGuiTableFlags_Resizable)) {
+		ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+		ImGui::TableSetupColumn("Expression", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+		ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+		ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, 50.0f);
+
+		ImGui::TableHeadersRow();
+
+		for (int i = 0; i < (int)watches_.size(); i++) {
+			auto &watch = watches_[i];
+			ImGui::PushID(i);
+			ImGui::TableNextRow();
+			ImGui::TableNextColumn();
+			ImGui::TextUnformatted(watch.name.c_str());
+			ImGui::TableNextColumn();
+			if (editingWatchIndex_ == i && editingColumn_ == 1) {
+				ImGui::SetNextItemWidth(-1.0f);  // Full width
+				if (setEditFocus_) {
+					ImGui::FocusItem();
+					setEditFocus_ = false;
+				}
+				bool confirmed = ImGui::InputText("##edit", editBuffer_, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+				// Filter for only enter presses
+				confirmed = confirmed && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter));
+				if (confirmed || ImGui::IsItemDeactivated()) {
+					watch.SetExpression(editBuffer_, mipsDebug);
+					editingWatchIndex_ = -1;
+				}
+			} else {
+				ImGui::SetNextItemWidth(-1.0f);  // Full width
+				ImGui::TextUnformatted(watch.originalExpression.c_str());
+				auto cellRect = ImGui::TableGetCellBgRect(ImGui::GetCurrentTable(), 1);
+				bool cellHovered = ImGui::IsMouseHoveringRect(cellRect.Min, cellRect.Max);
+				if (cellHovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+					editingWatchIndex_ = i;
+					editingColumn_ = 1;
+					truncate_cpy(editBuffer_, watch.originalExpression.c_str());
+					setEditFocus_ = true;
+				}
+			}
+			ImGui::TableNextColumn();
+			if (watch.evaluateFailed) {
+				ImGui::TextUnformatted("(Error)");
+			} else {
+				bool changed = watch.currentValue != watch.lastValue;
+				if (changed) {
+					//ImGui::PushStyleColor(ImGuiCol_Text, ImDebuggerColor_Diff);
+				}
+				const uint32_t value = watch.currentValue;
+				float valuef = 0.0f;
+				switch (watch.format) {
+				case WatchFormat::HEX:
+					ImGui::Text("%08x", value);
+					break;
+				case WatchFormat::INT:
+					ImGui::Text("%d", value);
+					break;
+				case WatchFormat::FLOAT:
+					memcpy(&valuef, &value, sizeof(valuef));
+					ImGui::Text("%f", static_cast<float>(value));
+					break;
+				case WatchFormat::STR:
+					if (Memory::IsValidAddress(value)) {
+						uint32_t len = Memory::ClampValidSizeAt(value, 255);
+						ImGui::Text("%.*s", len, Memory::GetCharPointer(value));
+					} else {
+						ImGui::Text("%08x", value);
+					}
+					break;
+				}
+				if (changed) {
+					//ImGui::PopStyleColor(ImGuiCol_Text);
+				}
+			}
+			ImGui::TableNextColumn();
+			if (ImGui::SmallButton("X")) {
+				watches_.erase(watches_.begin() + i);
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Type")) {
+				ImGui::OpenPopup("watchType");
+			}
+			if (ImGui::BeginPopup("watchType")) {
+				ImGui::Text("Watch type");
+				if (ImGui::MenuItem("Hex", nullptr, watch.format == WatchFormat::HEX)) { watch.format = WatchFormat::HEX; }
+				if (ImGui::MenuItem("Int", nullptr, watch.format == WatchFormat::INT)) { watch.format = WatchFormat::INT; }
+				if (ImGui::MenuItem("Float", nullptr, watch.format == WatchFormat::FLOAT)) { watch.format = WatchFormat::FLOAT; }
+				if (ImGui::MenuItem("Str", nullptr, watch.format == WatchFormat::STR)) { watch.format = WatchFormat::STR; }
+				ImGui::EndPopup();
+			}
+
+			ImGui::PopID();
+		}
+
+		ImGui::EndTable();
+	}
+
+	ImGui::End();
+}
+
+void ImAtracToolWindow::Load() {
+	if (File::ReadBinaryFileToString(Path(atracPath_), &data_)) {
+		track_.reset(new Track());
+		AnalyzeAtracTrack((const u8 *)data_.data(), (u32)data_.size(), track_.get(), &error_);
+	} else {
+		error_ = "Failed to read file from disk. Bad path?";
+	}
 }
 
 void ImAtracToolWindow::Draw(ImConfig &cfg) {
@@ -1489,26 +2173,42 @@ void ImAtracToolWindow::Draw(ImConfig &cfg) {
 	ImGui::InputText("File", atracPath_, sizeof(atracPath_));
 	ImGui::SameLine();
 	if (ImGui::Button("Choose...")) {
-		System_BrowseForFile(cfg.requesterToken, "Choose AT3 file", BrowseFileType::ATRAC3, [&](const std::string &filename, int) {
+		System_BrowseForFile(cfg.requesterToken, "Choose AT3 file", BrowseFileType::ATRAC3, [this](const std::string &filename, int) {
 			truncate_cpy(atracPath_, filename);
+			Load();
 		}, nullptr);
 	}
 
 	if (strlen(atracPath_) > 0) {
 		if (ImGui::Button("Load")) {
-			track_.reset(new Track());
-			std::string data;
-			if (File::ReadBinaryFileToString(Path(atracPath_), &data)) {
-				AnalyzeAtracTrack((const u8 *)data.data(), (u32)data.size(), track_.get(), &error_);
-			}
+			Load();
 		}
 	}
 
 	if (track_.get() != 0) {
 		ImGui::Text("Codec: %s", track_->codecType != PSP_CODEC_AT3 ? "at3+" : "at3");
 		ImGui::Text("Bitrate: %d kbps Channels: %d", track_->Bitrate(), track_->channels);
-		ImGui::Text("Frame size in bytes: %d Output frame in samples: %d", track_->BytesPerFrame(), track_->SamplesPerFrame());
+		ImGui::Text("Frame size in bytes: %d (%04x) Output frame in samples: %d", track_->BytesPerFrame(), track_->BytesPerFrame(), track_->SamplesPerFrame());
 		ImGui::Text("First valid sample: %08x", track_->FirstSampleOffsetFull());
+		ImGui::Text("EndSample: %08x", track_->endSample);
+	}
+
+	if (data_.size()) {
+		if (ImGui::Button("Dump 64 raw frames")) {
+			std::string firstFrames = data_.substr(track_->dataByteOffset, track_->bytesPerFrame * 64);
+			System_BrowseForFileSave(cfg.requesterToken, "Save .at3raw", "at3.raw", BrowseFileType::ANY, [firstFrames](const std::string &filename, int) {
+				FILE *f = File::OpenCFile(Path(filename), "wb");
+				if (f) {
+					fwrite(firstFrames.data(), 1, firstFrames.size(), f);
+					fclose(f);
+				}
+			});
+		}
+
+		if (ImGui::Button("Unload")) {
+			data_.clear();
+			track_.reset(nullptr);
+		}
 	}
 
 	if (!error_.empty()) {
@@ -1524,11 +2224,11 @@ void DrawHLEModules(ImConfig &config) {
 		return;
 	}
 
-	const int moduleCount = GetNumRegisteredModules();
+	const int moduleCount = GetNumRegisteredHLEModules();
 	std::vector<const HLEModule *> modules;
 	modules.reserve(moduleCount);
 	for (int i = 0; i < moduleCount; i++) {
-		modules.push_back(GetModuleByIndex(i));
+		modules.push_back(GetHLEModuleByIndex(i));
 	}
 
 	std::sort(modules.begin(), modules.end(), [](const HLEModule* a, const HLEModule* b) {
@@ -1544,6 +2244,47 @@ void DrawHLEModules(ImConfig &config) {
 			}
 			ImGui::TreePop();
 		}
+		if (ImGui::BeginPopupContextItem(label.c_str())) {
+			if (ImGui::MenuItem("Copy as JpscpTrace")) {
+				char *buffer = new char[1000000];
+				StringWriter w(buffer, 1000000);
+
+				for (int j = 0; j < mod->numFunctions; j++) {
+					auto &func = mod->funcTable[j];
+					// Translate the argmask to fit jpscptrace
+					std::string amask = func.argmask;
+					for (int i = 0; i < amask.size(); i++) {
+						switch (amask[i]) {
+						case 'i':
+						case 'I': amask[i] = 'd'; break;
+						case 'f':
+						case 'F': amask[i] = 'x'; break;
+						default:
+							// others go straight through (p)
+							break;
+						}
+					}
+					w.F("%s 0x%08x %d %s", func.name, func.ID, strlen(func.argmask), amask.c_str()).endl();
+				}
+				System_CopyStringToClipboard(w.as_view());
+				delete[] buffer;
+			}
+			if (ImGui::MenuItem("Copy as imports.S")) {
+				char *buffer = new char[100000];
+				StringWriter w(buffer, 100000);
+
+				w.C(".set noreorder\n\n#include \"pspimport.s\"\n\n");
+				w.F("IMPORT_START \"%.*s\",0x00090011\n", (int)mod->name.size(), mod->name.data());
+				for (int j = 0; j < mod->numFunctions; j++) {
+					auto &func = mod->funcTable[j];
+					w.F("IMPORT_FUNC  \"%.*s\",0x%08X,%s\n", (int)mod->name.size(), mod->name.data(), func.ID, func.name);
+				}
+				w.endl();
+				System_CopyStringToClipboard(w.as_view());
+				delete[] buffer;
+			}
+			ImGui::EndPopup();
+		}
 	}
 
 	ImGui::End();
@@ -1553,6 +2294,9 @@ ImDebugger::ImDebugger() {
 	reqToken_ = g_requestManager.GenerateRequesterToken();
 	cfg_.LoadConfig(ConfigPath());
 	g_normalTextColor = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+
+	// Just enable ring buffer logging here, it's cheap (but needed for the log window)
+	g_logManager.EnableOutput(LogOutput::RingBuffer);
 }
 
 ImDebugger::~ImDebugger() {
@@ -1619,34 +2363,6 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			ImGui::MenuItem("Don't break on start", nullptr, &g_Config.bAutoRun);  // should really invert this bool!
 			ImGui::MenuItem("Fast memory", nullptr, &g_Config.bFastMemory);
 			ImGui::Separator();
-
-			/*
-			// Symbol stuff. Move to separate menu?
-			// Doesn't quite seem to work yet.
-			if (ImGui::MenuItem("Load symbol map...")) {
-				System_BrowseForFile(reqToken_, "Load symbol map", BrowseFileType::SYMBOL_MAP, [&](const char *responseString, int) {
-					Path path(responseString);
-					if (!g_symbolMap->LoadSymbolMap(path)) {
-						ERROR_LOG(Log::Common, "Failed to load symbol map");
-					}
-					disasm_.DirtySymbolMap();
-				});
-			}
-			if (ImGui::MenuItem("Save symbol map...")) {
-				System_BrowseForFileSave(reqToken_, "Save symbol map", "symbols.map", BrowseFileType::SYMBOL_MAP, [](const char *responseString, int) {
-					Path path(responseString);
-					if (!g_symbolMap->SaveSymbolMap(path)) {
-						ERROR_LOG(Log::Common, "Failed to save symbol map");
-					}
-				});
-			}
-			*/
-			if (ImGui::MenuItem("Reset symbol map")) {
-				g_symbolMap->Clear();
-				disasm_.DirtySymbolMap();
-				// NotifyDebuggerMapLoaded();
-			}
-			ImGui::Separator();
 			if (ImGui::MenuItem("Take screenshot")) {
 				g_TakeScreenshot = true;
 			}
@@ -1659,10 +2375,15 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 					System_CopyStringToClipboard(StringFromFormat("%016llx", (uint64_t)(uintptr_t)Memory::base));
 				}
 			}
+			ImGui::Separator(); 
+			if (ImGui::MenuItem("Close")) {
+				g_Config.bShowImDebugger = false;
+			}
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Core")) {
 			ImGui::MenuItem("Scheduler", nullptr, &cfg_.schedulerOpen);
+			ImGui::MenuItem("Time", nullptr, &cfg_.timeOpen);
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("CPU")) {
@@ -1670,8 +2391,58 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			ImGui::MenuItem("GPR regs", nullptr, &cfg_.gprOpen);
 			ImGui::MenuItem("FPR regs", nullptr, &cfg_.fprOpen);
 			ImGui::MenuItem("VFPU regs", nullptr, &cfg_.vfpuOpen);
+			ImGui::Separator();
 			ImGui::MenuItem("Callstacks", nullptr, &cfg_.callstackOpen);
 			ImGui::MenuItem("Breakpoints", nullptr, &cfg_.breakpointsOpen);
+			ImGui::MenuItem("Watch", nullptr, &cfg_.watchOpen);
+			ImGui::MenuItem("JIT viewer", nullptr, &cfg_.jitViewerOpen);
+			ImGui::EndMenu();
+		}
+		if (ImGui::BeginMenu("Symbols")) {
+			ImGui::MenuItem("Symbol browser", nullptr, &cfg_.symbolsOpen);
+			ImGui::Separator();
+
+			if (ImGui::MenuItem("Load .ppmap...")) {
+				System_BrowseForFile(reqToken_, "Load PPSSPP symbol map", BrowseFileType::SYMBOL_MAP, [&](const char *responseString, int) {
+					Path path(responseString);
+					if (!g_symbolMap->LoadSymbolMap(path)) {
+						ERROR_LOG(Log::Common, "Failed to load symbol map");
+					}
+					disasm_.DirtySymbolMap();
+				});
+			}
+			if (ImGui::MenuItem("Save .ppmap...")) {
+				System_BrowseForFileSave(reqToken_, "Save PPSSPP symbol map", "symbols.ppmap", BrowseFileType::SYMBOL_MAP, [](const char *responseString, int) {
+					Path path(responseString);
+					if (!g_symbolMap->SaveSymbolMap(path)) {
+						ERROR_LOG(Log::Common, "Failed to save symbol map");
+					}
+				});
+			}
+			if (ImGui::MenuItem("Load No$ .sym...")) {
+				System_BrowseForFile(reqToken_, "Load No$ symbol map", BrowseFileType::SYMBOL_MAP, [&](const char *responseString, int) {
+					Path path(responseString);
+					if (!g_symbolMap->LoadNocashSym(path)) {
+						ERROR_LOG(Log::Common, "Failed to load No$ symbol map");
+					}
+					disasm_.DirtySymbolMap();
+				});
+			}
+			if (ImGui::MenuItem("Save No$ .sym...")) {
+				System_BrowseForFileSave(reqToken_, "Save No$ symbol map", "symbols.sym", BrowseFileType::SYMBOL_MAP, [](const char *responseString, int) {
+					Path path(responseString);
+					if (!g_symbolMap->SaveNocashSym(path)) {
+						ERROR_LOG(Log::Common, "Failed to save No$ symbol map");
+					}
+				});
+			}
+			ImGui::Separator();
+			ImGui::MenuItem("Compress .ppmap files", nullptr, &g_Config.bCompressSymbols);
+			if (ImGui::MenuItem("Reset symbol map")) {
+				g_symbolMap->Clear();
+				disasm_.DirtySymbolMap();
+				// NotifyDebuggerMapLoaded();
+			}
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Memory")) {
@@ -1684,6 +2455,7 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("OS HLE")) {
+			ImGui::MenuItem("HLE module browser", nullptr, &cfg_.hleModulesOpen);
 			ImGui::MenuItem("File System Browser", nullptr, &cfg_.filesystemBrowserOpen);
 			ImGui::MenuItem("Kernel Objects", nullptr, &cfg_.kernelObjectsOpen);
 			ImGui::MenuItem("Threads", nullptr, &cfg_.threadsOpen);
@@ -1694,6 +2466,7 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 		if (ImGui::BeginMenu("Graphics")) {
 			ImGui::MenuItem("GE Debugger", nullptr, &cfg_.geDebuggerOpen);
 			ImGui::MenuItem("GE State", nullptr, &cfg_.geStateOpen);
+			ImGui::MenuItem("GE Vertices", nullptr, &cfg_.geVertsOpen);
 			ImGui::MenuItem("Display Output", nullptr, &cfg_.displayOpen);
 			ImGui::MenuItem("Textures", nullptr, &cfg_.texturesOpen);
 			ImGui::MenuItem("Framebuffers", nullptr, &cfg_.framebuffersOpen);
@@ -1701,10 +2474,12 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			// More to come here...
 			ImGui::EndMenu();
 		}
-		if (ImGui::BeginMenu("Audio")) {
+		if (ImGui::BeginMenu("Audio/Video")) {
 			ImGui::MenuItem("SasAudio mixer", nullptr, &cfg_.sasAudioOpen);
 			ImGui::MenuItem("Raw audio channels", nullptr, &cfg_.audioChannelsOpen);
-			ImGui::MenuItem("Decoder contexts", nullptr, &cfg_.audioDecodersOpen);
+			ImGui::MenuItem("AV Decoder contexts", nullptr, &cfg_.mediaDecodersOpen);
+			ImGui::Separator();
+			ImGui::MenuItem("Audio output / buffer", nullptr, &cfg_.audioOutOpen);
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Network")) {
@@ -1715,20 +2490,38 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Tools")) {
-			ImGui::MenuItem("Debug stats", nullptr, &cfg_.debugStatsOpen);
-			ImGui::MenuItem("Struct viewer", nullptr, &cfg_.structViewerOpen);
+			ImGui::MenuItem("Lua Console", nullptr, &cfg_.luaConsoleOpen);
+			ImGui::MenuItem("Log", nullptr, &cfg_.logOpen);
 			ImGui::MenuItem("Log channels", nullptr, &cfg_.logConfigOpen);
+			ImGui::MenuItem("Debug stats", nullptr, &cfg_.debugStatsOpen);
+			ImGui::Separator();
+			ImGui::MenuItem("ParamSFO viewer", nullptr, &cfg_.paramSFOOpen);
+			ImGui::MenuItem("Struct viewer", nullptr, &cfg_.structViewerOpen);
 			ImGui::MenuItem("Atrac Tool", nullptr, &cfg_.atracToolOpen);
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Misc")) {
-			if (ImGui::MenuItem("Close Debugger")) {
-				g_Config.bShowImDebugger = false;
-			}
 			ImGui::MenuItem("PPSSPP Internals", nullptr, &cfg_.internalsOpen);
 			ImGui::MenuItem("Dear ImGui Demo", nullptr, &cfg_.demoOpen);
 			ImGui::MenuItem("Dear ImGui Style editor", nullptr, &cfg_.styleEditorOpen);
 			ImGui::EndMenu();
+		}
+		if (ImGui::MenuItem("Close")) {
+			g_Config.bShowImDebugger = false;
+		}
+		switch (coreState) {
+		case CoreState::CORE_STEPPING_CPU:
+			if (ImGui::MenuItem(">> Run")) {
+				Core_Resume();
+			}
+			break;
+		case CoreState::CORE_RUNNING_CPU:
+			if (ImGui::MenuItem("|| Break")) {
+				Core_Break(BreakReason::DebugBreak);
+			}
+			break;
+		default:
+			break;
 		}
 		ImGui::EndMainMenuBar();
 	}
@@ -1769,6 +2562,10 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 		DrawAudioChannels(cfg_, control);
 	}
 
+	if (cfg_.audioOutOpen) {
+		DrawAudioOut(cfg_, control);
+	}
+
 	if (cfg_.sasAudioOpen) {
 		DrawSasAudio(cfg_);
 	}
@@ -1789,12 +2586,16 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 		DrawModules(mipsDebug, cfg_, control);
 	}
 
+	if (cfg_.symbolsOpen) {
+		DrawSymbols(mipsDebug, cfg_, control);
+	}
+
 	if (cfg_.utilityModulesOpen) {
 		DrawUtilityModules(cfg_, control);
 	}
 
-	if (cfg_.audioDecodersOpen) {
-		DrawAudioDecodersView(cfg_, control);
+	if (cfg_.mediaDecodersOpen) {
+		DrawMediaDecodersView(cfg_, control);
 	}
 
 	if (cfg_.hleModulesOpen) {
@@ -1817,6 +2618,14 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 		DrawLogConfig(cfg_);
 	}
 
+	if (cfg_.logOpen) {
+		logWindow_.Draw(cfg_);
+	}
+
+	if (cfg_.jitViewerOpen) {
+		jitViewer_.Draw(cfg_, control);
+	}
+
 	if (cfg_.displayOpen) {
 		DrawDisplayWindow(cfg_, gpuDebug->GetFramebufferManagerCommon());
 	}
@@ -1829,6 +2638,10 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 		structViewer_.Draw(cfg_, control, mipsDebug);
 	}
 
+	if (cfg_.paramSFOOpen) {
+		DrawParamSFO(cfg_, control);
+	}
+
 	if (cfg_.geDebuggerOpen) {
 		geDebugger_.Draw(cfg_, control, gpuDebug, draw);
 	}
@@ -1837,8 +2650,16 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 		geStateWindow_.Draw(cfg_, control, gpuDebug);
 	}
 
+	if (cfg_.geVertsOpen) {
+		DrawImGeVertsWindow(cfg_, control, gpuDebug);
+	}
+
 	if (cfg_.schedulerOpen) {
 		DrawSchedulerView(cfg_);
+	}
+
+	if (cfg_.timeOpen) {
+		DrawTimeView(cfg_);
 	}
 
 	if (cfg_.pixelViewerOpen) {
@@ -1847,6 +2668,10 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 
 	if (cfg_.memDumpOpen) {
 		memDumpWindow_.Draw(cfg_, mipsDebug);
+	}
+
+	if (cfg_.watchOpen) {
+		watchWindow_.Draw(cfg_, control, mipsDebug);
 	}
 
 	for (int i = 0; i < 4; i++) {
@@ -1916,6 +2741,9 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 	case ImCmd::SHOW_IN_PIXEL_VIEWER:
 		break;
 	}
+	if (cfg_.luaConsoleOpen) {
+		luaConsole_.Draw(cfg_);
+	}
 }
 
 void ImDebugger::Snapshot(MIPSState *mips) {
@@ -1933,273 +2761,9 @@ void ImDebugger::SnapshotGPU(GPUDebugInterface *gpuDebug) {
 	pixelViewer_.Snapshot();
 }
 
-void ImMemWindow::Draw(MIPSDebugInterface *mipsDebug, ImConfig &cfg, ImControl &control, int index) {
-	ImGui::SetNextWindowSize(ImVec2(520, 600), ImGuiCond_FirstUseEver);
-	if (!ImGui::Begin(Title(index), &cfg.memViewOpen[index])) {
-		ImGui::End();
-		return;
-	}
-
-	// Toolbars
-
-	ImGui::InputScalar("Go to addr: ", ImGuiDataType_U32, &gotoAddr_, NULL, NULL, "%08X");
-	if (ImGui::IsItemDeactivatedAfterEdit()) {
-		memView_.gotoAddr(gotoAddr_);
-	}
-	ImGui::SameLine();
-	if (ImGui::SmallButton("Go")) {
-		memView_.gotoAddr(gotoAddr_);
-	}
-
-	ImVec2 size(0, -ImGui::GetFrameHeightWithSpacing());
-
-	auto node = [&](const char *title, uint32_t start, uint32_t len) {
-		if (ImGui::TreeNode(title)) {
-			if (ImGui::Selectable("(start)", cfg.selectedMemoryBlock == start)) {
-				cfg.selectedMemoryBlock = start;
-				GotoAddr(start);
-			}
-			const std::vector<MemBlockInfo> info = FindMemInfo(start, len);
-			for (auto &iter : info) {
-				ImGui::PushID(iter.start);
-				if (ImGui::Selectable(iter.tag.c_str(), cfg.selectedMemoryBlock == iter.start)) {
-					cfg.selectedMemoryBlock = iter.start;
-					GotoAddr(iter.start);
-				}
-				ImGui::PopID();
-			}
-			const u32 end = start + len;
-			if (ImGui::Selectable("(end)", cfg.selectedMemoryBlock == end)) {
-				cfg.selectedMemoryBlock = end;
-				GotoAddr(end);
-			}
-			ImGui::TreePop();
-		}
-	};
-
-	// Main views - list of interesting addresses to the left, memory view to the right.
-	if (ImGui::BeginChild("addr_list", ImVec2(200.0f, size.y), ImGuiChildFlags_ResizeX)) {
-		node("Scratch",    0x00010000, 0x00004000);
-		node("Kernel RAM", 0x08000000, 0x00800000);
-		node("User RAM"  , 0x08800000, 0x01800000);
-		node("VRAM",       0x04000000, 0x00200000);
-	}
-
-	ImGui::EndChild();
-
-	ImGui::SameLine();
-	if (ImGui::BeginChild("memview", size)) {
-		memView_.Draw(ImGui::GetWindowDrawList());
-	}
-	ImGui::EndChild();
-
-	StatusBar(memView_.StatusMessage());
-
-	ImGui::End();
-}
-
-const char *ImMemWindow::Title(int index) {
-	static const char *const titles[4] = { "Memory 1", "Memory 2", "Memory 3", "Memory 4" };
-	return titles[index];
-}
-
-void ImDisasmWindow::Draw(MIPSDebugInterface *mipsDebug, ImConfig &cfg, ImControl &control, CoreState coreState) {
-	disasmView_.setDebugger(mipsDebug);
-
-	ImGui::SetNextWindowSize(ImVec2(520, 600), ImGuiCond_FirstUseEver);
-	if (!ImGui::Begin(Title(), &cfg.disasmOpen)) {
-		ImGui::End();
-		return;
-	}
-
-	if (ImGui::IsWindowFocused()) {
-		// Process stepping keyboard shortcuts.
-		if (ImGui::IsKeyPressed(ImGuiKey_F10)) {
-			u32 stepSize = disasmView_.getInstructionSizeAt(mipsDebug->GetPC());
-			Core_RequestCPUStep(CPUStepType::Over, stepSize);
-		}
-		if (ImGui::IsKeyPressed(ImGuiKey_F11)) {
-			u32 stepSize = disasmView_.getInstructionSizeAt(mipsDebug->GetPC());
-			Core_RequestCPUStep(CPUStepType::Into, stepSize);
-		}
-	}
-
-	if (coreState == CORE_STEPPING_GE || coreState == CORE_RUNNING_GE) {
-		ImGui::Text("!!! Currently stepping the GE");
-		ImGui::SameLine();
-		if (ImGui::SmallButton("Open Ge Debugger")) {
-			cfg.geDebuggerOpen = true;
-			ImGui::SetWindowFocus("GE Debugger");
-		}
-	}
-
-	ImGui::BeginDisabled(coreState != CORE_STEPPING_CPU);
-	if (ImGui::SmallButton("Run")) {
-		Core_Resume();
-	}
-	ImGui::EndDisabled();
-
-	ImGui::SameLine();
-	ImGui::BeginDisabled(coreState != CORE_RUNNING_CPU);
-	if (ImGui::SmallButton("Pause")) {
-		Core_Break(BreakReason::DebugBreak);
-	}
-	ImGui::EndDisabled();
-
-	ImGui::BeginDisabled(coreState != CORE_STEPPING_CPU);
-
-	ImGui::SameLine();
-	ImGui::Text("Step: ");
-	ImGui::SameLine();
-
-	if (ImGui::SmallButton("Into")) {
-		u32 stepSize = disasmView_.getInstructionSizeAt(mipsDebug->GetPC());
-		Core_RequestCPUStep(CPUStepType::Into, stepSize);
-	}
-	if (ImGui::IsItemHovered()) {
-		ImGui::SetTooltip("F11");
-	}
-
-	ImGui::SameLine();
-	if (ImGui::SmallButton("Over")) {
-		u32 stepSize = disasmView_.getInstructionSizeAt(mipsDebug->GetPC());
-		Core_RequestCPUStep(CPUStepType::Over, stepSize);
-	}
-	if (ImGui::IsItemHovered()) {
-		ImGui::SetTooltip("F10");
-	}
-
-	ImGui::SameLine();
-	if (ImGui::SmallButton("Out")) {
-		Core_RequestCPUStep(CPUStepType::Out, 0);
-	}
-
-	/*
-	ImGui::SameLine();
-	if (ImGui::SmallButton("Frame")) {
-		Core_RequestCPUStep(CPUStepType::Frame, 0);
-	}*/
-
-	ImGui::SameLine();
-	if (ImGui::SmallButton("Syscall")) {
-		hleDebugBreak();
-		Core_Resume();
-	}
-
-	ImGui::SameLine();
-	ImGui::SmallButton("Skim");
-	if (ImGui::IsItemActive()) {
-		u32 stepSize = disasmView_.getInstructionSizeAt(mipsDebug->GetPC());
-		Core_RequestCPUStep(CPUStepType::Into, stepSize);
-	}
-
-	ImGui::EndDisabled();
-
-	ImGui::SameLine();
-	if (ImGui::SmallButton("Goto PC")) {
-		disasmView_.GotoPC();
-	}
-	ImGui::SameLine();
-	if (ImGui::SmallButton("Goto RA")) {
-		disasmView_.GotoRA();
-	}
-
-	if (ImGui::BeginPopup("disSearch")) {
-		if (ImGui::IsWindowAppearing()) {
-			ImGui::SetKeyboardFocusHere();
-		}
-		if (ImGui::InputText("Search", searchTerm_, sizeof(searchTerm_), ImGuiInputTextFlags_EnterReturnsTrue)) {
-			disasmView_.Search(searchTerm_);
-			ImGui::CloseCurrentPopup();
-		}
-		ImGui::EndPopup();
-	}
-
-	ImGui::SameLine();
-	if (ImGui::SmallButton("Search")) {
-		// Open a small popup
-		ImGui::OpenPopup("disSearch");
-		ImGui::Shortcut(ImGuiKey_F | ImGuiMod_Ctrl);
-	}
-
-	ImGui::SameLine();
-	if (ImGui::SmallButton("Next")) {
-		disasmView_.SearchNext(true);
-	}
-
-	ImGui::SameLine();
-	if (ImGui::SmallButton("Settings")) {
-		ImGui::OpenPopup("disSettings");
-	}
-
-	if (ImGui::BeginPopup("disSettings")) {
-		ImGui::Checkbox("Follow PC", &disasmView_.followPC_);
-		ImGui::EndPopup();
-	}
-
-	ImGui::SetNextItemWidth(100);
-	if (ImGui::InputScalar("Go to addr: ", ImGuiDataType_U32, &gotoAddr_, NULL, NULL, "%08X")) {
-		disasmView_.setCurAddress(gotoAddr_);
-		disasmView_.scrollAddressIntoView();
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Go")) {
-		disasmView_.setCurAddress(gotoAddr_);
-		disasmView_.scrollAddressIntoView();
-	}
-
-	BreakReason breakReason = Core_BreakReason();
-	ImGui::SameLine();
-	ImGui::TextUnformatted(BreakReasonToString(breakReason));
-
-	ImVec2 avail = ImGui::GetContentRegionAvail();
-	avail.y -= ImGui::GetTextLineHeightWithSpacing();
-
-	if (ImGui::BeginChild("left", ImVec2(150.0f, avail.y), ImGuiChildFlags_ResizeX)) {
-		if (symCache_.empty() || symsDirty_) {
-			symCache_ = g_symbolMap->GetAllSymbols(SymbolType::ST_FUNCTION);
-			symsDirty_ = false;
-		}
-
-		if (selectedSymbol_ >= 0 && selectedSymbol_ < symCache_.size()) {
-			auto &sym = symCache_[selectedSymbol_];
-			if (ImGui::TreeNode("Edit Symbol", "Edit %s", sym.name.c_str())) {
-				if (ImGui::InputText("Name", selectedSymbolName_, sizeof(selectedSymbolName_), ImGuiInputTextFlags_EnterReturnsTrue)) {
-					g_symbolMap->SetLabelName(selectedSymbolName_, sym.address);
-					symsDirty_ = true;
-				}
-				ImGui::Text("%08x (size: %0d)", sym.address, sym.size);
-				ImGui::TreePop();
-			}
-		}
-
-		if (ImGui::BeginListBox("##symbols", ImGui::GetContentRegionAvail())) {
-			ImGuiListClipper clipper;
-			clipper.Begin((int)symCache_.size(), -1);
-			while (clipper.Step()) {
-				for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
-					if (ImGui::Selectable(symCache_[i].name.c_str(), selectedSymbol_ == i)) {
-						disasmView_.gotoAddr(symCache_[i].address);
-						disasmView_.scrollAddressIntoView();
-						truncate_cpy(selectedSymbolName_, symCache_[i].name.c_str());
-						selectedSymbol_ = i;
-					}
-				}
-			}
-			clipper.End();
-			ImGui::EndListBox();
-		}
-	}
-	ImGui::EndChild();
-
-	ImGui::SameLine();
-	if (ImGui::BeginChild("right", ImVec2(0.0f, avail.y))) {
-		disasmView_.Draw(ImGui::GetWindowDrawList(), control);
-	}
-	ImGui::EndChild();
-
-	StatusBar(disasmView_.StatusBarText());
-	ImGui::End();
+void ImDebugger::DeviceLost() {
+	pixelViewer_.DeviceLost();
+	geDebugger_.DeviceLost();
 }
 
 Path ImDebugger::ConfigPath() {
@@ -2233,7 +2797,9 @@ public:
 		if (save_) {
 			section_->Set(key, *value);
 		} else {
-			section_->Get(key, value, defaultValue);
+			if (!section_->Get(key, value)) {
+				*value = defaultValue;
+			}
 		}
 	}
 private:
@@ -2245,16 +2811,17 @@ void ImConfig::SyncConfig(IniFile *ini, bool save) {
 	Syncer sync(save);
 	sync.SetSection(ini->GetOrCreateSection("Windows"));
 	sync.Sync("disasmOpen", &disasmOpen, true);
-	sync.Sync("demoOpen ", &demoOpen, false);
+	sync.Sync("demoOpen", &demoOpen, false);
 	sync.Sync("gprOpen", &gprOpen, false);
 	sync.Sync("fprOpen", &fprOpen, false);
 	sync.Sync("vfpuOpen", &vfpuOpen, false);
 	sync.Sync("threadsOpen", &threadsOpen, false);
 	sync.Sync("callstackOpen", &callstackOpen, false);
 	sync.Sync("breakpointsOpen", &breakpointsOpen, false);
+	sync.Sync("symbolsOpen", &symbolsOpen, false);
 	sync.Sync("modulesOpen", &modulesOpen, false);
 	sync.Sync("hleModulesOpen", &hleModulesOpen, false);
-	sync.Sync("audioDecodersOpen", &audioDecodersOpen, false);
+	sync.Sync("mediaDecodersOpen", &mediaDecodersOpen, false);
 	sync.Sync("structViewerOpen", &structViewerOpen, false);
 	sync.Sync("framebuffersOpen", &framebuffersOpen, false);
 	sync.Sync("displayOpen", &displayOpen, true);
@@ -2262,11 +2829,14 @@ void ImConfig::SyncConfig(IniFile *ini, bool save) {
 	sync.Sync("filesystemBrowserOpen", &filesystemBrowserOpen, false);
 	sync.Sync("kernelObjectsOpen", &kernelObjectsOpen, false);
 	sync.Sync("audioChannelsOpen", &audioChannelsOpen, false);
+	sync.Sync("audioOutOpen", &audioOutOpen, false);
 	sync.Sync("texturesOpen", &texturesOpen, false);
 	sync.Sync("debugStatsOpen", &debugStatsOpen, false);
 	sync.Sync("geDebuggerOpen", &geDebuggerOpen, false);
 	sync.Sync("geStateOpen", &geStateOpen, false);
+	sync.Sync("geVertsOpen", &geVertsOpen, false);
 	sync.Sync("schedulerOpen", &schedulerOpen, false);
+	sync.Sync("timeOpen", &timeOpen, false);
 	sync.Sync("socketsOpen", &socketsOpen, false);
 	sync.Sync("npOpen", &npOpen, false);
 	sync.Sync("adhocOpen", &adhocOpen, false);
@@ -2275,7 +2845,14 @@ void ImConfig::SyncConfig(IniFile *ini, bool save) {
 	sync.Sync("internalsOpen", &internalsOpen, false);
 	sync.Sync("sasAudioOpen", &sasAudioOpen, false);
 	sync.Sync("logConfigOpen", &logConfigOpen, false);
+	sync.Sync("logOpen", &logOpen, false);
+	sync.Sync("luaConsoleOpen", &luaConsoleOpen, false);
 	sync.Sync("utilityModulesOpen", &utilityModulesOpen, false);
+	sync.Sync("memDumpOpen", &memDumpOpen, false);
+	sync.Sync("watchOpen", &watchOpen, false);
+	sync.Sync("paramSFOOpen", &paramSFOOpen, false);
+	sync.Sync("atracToolOpen", &atracToolOpen, false);
+	sync.Sync("jitViewerOpen", &jitViewerOpen, false);
 	for (int i = 0; i < 4; i++) {
 		char name[64];
 		snprintf(name, sizeof(name), "memory%dOpen", i + 1);

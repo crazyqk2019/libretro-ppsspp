@@ -73,12 +73,11 @@ protected:
 
 private:
 	void CreateViews() override;
-	UI::EventReturn OnDevTools(UI::EventParams &params);
-	UI::EventReturn OnDisableCardboard(UI::EventParams &params);
-	UI::EventReturn OnChat(UI::EventParams &params);
-	UI::EventReturn OnResume(UI::EventParams &params);
+	void OnDevTools(UI::EventParams &params);
+	void OnChat(UI::EventParams &params);
 
-	void bootGame(const Path &filename);
+	void HandleFlip();
+	void ProcessGameBoot(const Path &filename);
 	bool bootAllowStorage(const Path &filename);
 	void bootComplete();
 	bool hasVisibleUI();
@@ -89,7 +88,7 @@ private:
 	void onVKey(VirtKey virtualKeyCode, bool down);
 	void onVKeyAnalog(VirtKey virtualKeyCode, float value);
 
-	void autoLoad();
+	void AutoLoadSaveState();
 	bool checkPowerDown();
 
 	void ProcessQueuedVKeys();
@@ -98,12 +97,10 @@ private:
 	UI::Event OnDevMenu;
 	UI::Event OnChatMenu;
 	bool bootPending_ = true;
+	bool bootIsReset_ = false;
 	Path gamePath_;
 
-	// Something invalid was loaded, don't try to emulate
-	bool invalid_ = true;
 	bool quit_ = false;
-	bool stopRender_ = false;
 	std::string errorMessage_;
 
 	// If set, pauses at the end of the frame.
@@ -135,8 +132,6 @@ private:
 
 	std::string extraAssertInfoStr_;
 
-	std::atomic<bool> doFrameAdvance_{};
-
 	ControlMapper controlMapper_;
 
 	std::unique_ptr<ImDebugger> imDebugger_ = nullptr;
@@ -154,6 +149,15 @@ private:
 	bool lastImguiEnabled_ = false;
 
 	std::vector<VirtKey> queuedVirtKeys_;
+
+	ImGuiContext *ctx_ = nullptr;
+
+	bool frameStep_ = false;
+#ifndef MOBILE_DEVICE
+	bool startDumping_ = false;
+#endif
+	bool autoLoadFailed_ = false;  // to prevent repeat reloads
+	bool readyToFinishBoot_ = false;
 };
 
 bool MustRunBehind();

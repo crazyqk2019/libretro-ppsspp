@@ -17,16 +17,19 @@
 
 #pragma once
 
+#include <string_view>
 #include "Common/CommonTypes.h"
 #include "Common/File/Path.h"
 #include "Core/CoreParameter.h"
 #include "Core/ConfigValues.h"
+#include "Core/Util/PathUtil.h"
 
 class MetaFileSystem;
 class ParamSFOData;
 
 extern MetaFileSystem pspFileSystem;
 extern ParamSFOData g_paramSFO;
+extern ParamSFOData g_paramSFORaw;
 
 // To synchronize the two UIs, we need to know which state we're in.
 enum GlobalUIState {
@@ -37,29 +40,6 @@ enum GlobalUIState {
 	UISTATE_EXCEPTION,
 };
 
-// Use these in conjunction with GetSysDirectory.
-enum PSPDirectories {
-	DIRECTORY_PSP,
-	DIRECTORY_CHEATS,
-	DIRECTORY_SCREENSHOT,
-	DIRECTORY_SYSTEM,
-	DIRECTORY_GAME,
-	DIRECTORY_SAVEDATA,
-	DIRECTORY_PAUTH,
-	DIRECTORY_DUMP,
-	DIRECTORY_SAVESTATE,
-	DIRECTORY_CACHE,
-	DIRECTORY_TEXTURES,
-	DIRECTORY_PLUGINS,
-	DIRECTORY_APP_CACHE,  // Use the OS app cache if available
-	DIRECTORY_VIDEO,
-	DIRECTORY_AUDIO,
-	DIRECTORY_MEMSTICK_ROOT,
-	DIRECTORY_EXDATA,
-	DIRECTORY_CUSTOM_SHADERS,
-	DIRECTORY_CUSTOM_THEMES,
-};
-
 class GraphicsContext;
 enum class GPUBackend;
 
@@ -67,32 +47,42 @@ void ResetUIState();
 void UpdateUIState(GlobalUIState newState);
 GlobalUIState GetUIState();
 
-void SetGPUBackend(GPUBackend type, const std::string &device = "");
+void SetGPUBackend(GPUBackend type, std::string_view device = "");
 GPUBackend GetGPUBackend();
 std::string GetGPUBackendDevice();
 
-bool PSP_Init(const CoreParameter &coreParam, std::string *error_string);
-bool PSP_InitStart(const CoreParameter &coreParam, std::string *error_string);
-bool PSP_InitUpdate(std::string *error_string);
-bool PSP_IsIniting();
-bool PSP_IsInited();
-bool PSP_IsRebooting();
-bool PSP_IsQuitting();
-void PSP_Shutdown();
-bool PSP_Reboot(std::string *error_string);
+enum class BootState {
+	Off,
+	Booting,
+	Complete,
+	Failed,
+};
 
-void PSP_BeginHostFrame();
-void PSP_EndHostFrame();
+BootState PSP_GetBootState();
+inline bool PSP_IsInited() {
+	return PSP_GetBootState() == BootState::Complete;
+}
+
+// Call this once, then call PSP_InitUpdate repeatedly to monitor progress.
+bool PSP_InitStart(const CoreParameter &coreParam);
+
+// Check the return value of this - if Booting, keep calling.
+// If Complete or Failed, handle as appropriate, and stop calling.
+BootState PSP_InitUpdate(std::string *error_string);
+
+// Blocking wrapper around the two above functions, used for convenience in a couple of places.
+// Should be avoided/removed eventually.
+// Returns either BootState::Complete or BootState::Failed.
+BootState PSP_Init(const CoreParameter &coreParam, std::string *error_string);
+
+void PSP_Shutdown(bool success);
+
+FileLoader *PSP_LoadedFile();
+
 void PSP_RunLoopWhileState();
 void PSP_RunLoopFor(int cycles);
 
-// Used to wait for background loading thread.
-struct PSP_LoadingLock {
-	PSP_LoadingLock();
-	~PSP_LoadingLock();
-};
-
-// Call before PSP_BeginHostFrame() in order to not miss any GPU stats.
+// Call before gpu->BeginHostFrame() in order to not miss any GPU stats.
 void PSP_UpdateDebugStats(bool collectStats);
 // Increments or decrements an internal counter.  Intended to be used by debuggers.
 void PSP_ForceDebugStats(bool enable);
@@ -113,4 +103,4 @@ inline CoreParameter &PSP_CoreParameter() {
 }
 
 // Centralized place for dumping useful files, also takes care of checking for dupes and creating a clickable UI popup.
-void DumpFileIfEnabled(const u8 *dataPtr, const u32 length, const char *name, DumpFileType type);
+void DumpFileIfEnabled(const u8 *dataPtr, const u32 length, std::string_view name, DumpFileType type);

@@ -91,6 +91,7 @@ public:
 		V(x, y, curZ_, color, u, v);
 	}
 
+	void CircleSegment(float x, float y, float radius, float thickness, int segments, float startAngle, float endAngle, uint32_t color, float u_mul);
 	void Circle(float x, float y, float radius, float thickness, int segments, float startAngle, uint32_t color, float u_mul);
 	void FillCircle(float x, float y, float radius, int segments, uint32_t color);
 
@@ -127,8 +128,7 @@ public:
 	void DrawImage2GridH(ImageID atlas_image, float x1, float y1, float x2, Color color = COLOR(0xFFFFFF), float scale = 1.0);
 
 	void MeasureText(FontID font, std::string_view text, float *w, float *h);
-
-	void MeasureTextRect(FontID font, std::string_view text, const Bounds &bounds, float *w, float *h, int align = 0);
+	void MeasureTextRect(FontID font, std::string_view text, float maxWidth, float *w, float *h, int align = 0);
 
 	void DrawTextRect(FontID font, std::string_view text, float x, float y, float w, float h, Color color = 0xFFFFFFFF, int align = 0);
 	void DrawText(FontID font, std::string_view text, float x, float y, Color color = 0xFFFFFFFF, int align = 0);

@@ -18,10 +18,10 @@
 #include "android/jni/app-android.h"
 #endif
 
-bool LoadRemoteFileList(const Path &url, const std::string &userAgent, bool *cancel, std::vector<File::FileInfo> &files) {
+static bool LoadRemoteFileList(const Path &url, std::string_view userAgent, bool *cancel, std::vector<File::FileInfo> &files) {
 	_dbg_assert_(url.Type() == PathType::HTTP);
 
-	http::Client http;
+	http::Client http(nullptr);
 	Buffer result;
 	int code = 500;
 	std::vector<std::string> responseHeaders;
@@ -129,7 +129,7 @@ void PathBrowser::SetPath(const Path &path) {
 }
 
 void PathBrowser::RestrictToRoot(const Path &root) {
-	INFO_LOG(Log::System, "Restricting to root: %s", root.c_str());
+	VERBOSE_LOG(Log::IO, "Restricting to root: %s", root.c_str());
 	restrictedRoot_ = root;
 }
 
@@ -204,31 +204,6 @@ void PathBrowser::ResetPending() {
 	pendingPath_.clear();
 }
 
-std::string PathBrowser::GetFriendlyPath() const {
-	// Show relative to memstick root if there.
-	if (path_.StartsWith(aliasMatch_)) {
-		std::string p;
-		if (aliasMatch_.ComputePathTo(path_, p)) {
-			return aliasDisplay_ + p;
-		}
-		std::string str = path_.ToString();
-		if (aliasMatch_.size() < str.length()) {
-			return aliasDisplay_ + str.substr(aliasMatch_.size());
-		} else {
-			return aliasDisplay_;
-		}
-	}
-
-    std::string str = path_.ToString();
-#if !PPSSPP_PLATFORM(ANDROID) && (PPSSPP_PLATFORM(LINUX) || PPSSPP_PLATFORM(MAC))
-	char *home = getenv("HOME");
-	if (home != nullptr && !strncmp(str.c_str(), home, strlen(home))) {
-		return std::string("~") + str.substr(strlen(home));
-	}
-#endif
-	return path_.ToVisualString();
-}
-
 bool PathBrowser::GetListing(std::vector<File::FileInfo> &fileInfo, const char *extensionFilter, bool *cancel) {
 	std::unique_lock<std::mutex> guard(pendingLock_);
 	while (!IsListingReady() && (!cancel || !*cancel)) {
@@ -244,7 +219,7 @@ bool PathBrowser::GetListing(std::vector<File::FileInfo> &fileInfo, const char *
 
 void PathBrowser::ApplyRestriction() {
 	if (!path_.StartsWith(restrictedRoot_) && !startsWith(path_.ToString(), "!")) {
-		WARN_LOG(Log::System, "Applying path restriction: %s (%s didn't match)", restrictedRoot_.c_str(), path_.c_str());
+		WARN_LOG(Log::IO, "Applying path restriction: %s (%s didn't match)", restrictedRoot_.c_str(), path_.c_str());
 		path_ = restrictedRoot_;
 	}
 }
@@ -263,7 +238,7 @@ void PathBrowser::NavigateUp() {
 }
 
 // TODO: Support paths like "../../hello"
-void PathBrowser::Navigate(const std::string &path) {
+void PathBrowser::Navigate(std::string_view path) {
 	if (path == ".")
 		return;
 	if (path == "..") {

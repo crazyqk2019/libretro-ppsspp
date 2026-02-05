@@ -1,8 +1,10 @@
+
 // Headless version of PPSSPP, for testing using http://code.google.com/p/pspautotests/ .
 // See headless.txt.
 // To build on non-windows systems, just run CMake in the SDL directory, it will build both a normal ppsspp and the headless version.
 // Example command line to run a test in the VS debugger (useful to debug failures):
 // > --root pspautotests/tests/../ --compare --timeout=5 --graphics=software pspautotests/tests/cpu/cpu_alu/cpu_alu.prx
+// NOTE: In MSVC, don't forget to set the working directory to $ProjectDir\.. in debug settings.
 
 #include "ppsspp_config.h"
 #include <cstdio>
@@ -42,6 +44,7 @@
 #include "Core/WebServer.h"
 #include "Core/HLE/sceUtility.h"
 #include "Core/SaveState.h"
+#include "GPU/GPUCommon.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
 #include "Common/Log.h"
 #include "Common/Log/LogManager.h"
@@ -92,7 +95,7 @@ bool System_GetPropertyBool(SystemProperty prop) {
 	}
 }
 void System_Notify(SystemNotification notification) {}
-void System_PostUIMessage(UIMessage message, const std::string &param) {}
+void System_PostUIMessage(UIMessage message, std::string_view param) {}
 void System_RunOnMainThread(std::function<void()>) {}
 bool System_MakeRequest(SystemRequestType type, int requestId, const std::string &param1, const std::string &param2, int64_t param3, int64_t param4) {
 	switch (type) {
@@ -184,9 +187,9 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const
 	if (opt.compare || opt.bench)
 		coreParameter.collectDebugOutput = &output;
 
-	std::string error_string;
-	if (!PSP_InitStart(coreParameter, &error_string)) {
-		fprintf(stderr, "Failed to start '%s'. Error: %s\n", coreParameter.fileToStart.c_str(), error_string.c_str());
+	if (!PSP_InitStart(coreParameter)) {
+		// Shouldn't really happen anymore, the errors happen later in PSP_InitUpdate.
+		fprintf(stderr, "Failed to start '%s'.\n", coreParameter.fileToStart.c_str());
 		printf("TESTERROR\n");
 		TeamCityPrint("testIgnored name='%s' message='PRX/ELF missing'", currentTestName.c_str());
 		GitHubActionsPrint("error", "PRX/ELF missing for %s", currentTestName.c_str());
@@ -198,9 +201,13 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const
 	if (opt.compare)
 		headlessHost->SetComparisonScreenshot(ExpectedScreenshotFromFilename(coreParameter.fileToStart), opt.maxScreenshotError);
 
-	while (!PSP_InitUpdate(&error_string))
+	std::string error_string;
+	while (PSP_InitUpdate(&error_string) == BootState::Booting) {
 		sleep_ms(1, "auto-test");
+	}
+
 	if (!PSP_IsInited()) {
+		TeamCityPrint("%s", error_string.c_str());
 		TeamCityPrint("testFailed name='%s' message='Startup failed'", currentTestName.c_str());
 		TeamCityPrint("testFinished name='%s'", currentTestName.c_str());
 		GitHubActionsPrint("error", "Test init failed for %s", currentTestName.c_str());
@@ -211,10 +218,13 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const
 
 	PSP_UpdateDebugStats((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::DEBUG_STATS || g_Config.bLogFrameDrops);
 
-	PSP_BeginHostFrame();
+	if (gpu) {
+		gpu->BeginHostFrame(g_Config.GetDisplayLayoutConfig(DeviceOrientation::Landscape));
+	}
 	Draw::DrawContext *draw = coreParameter.graphicsContext ? coreParameter.graphicsContext->GetDrawContext() : nullptr;
-	if (draw)
+	if (draw) {
 		draw->BeginFrame(Draw::DebugFlags::NONE);
+	}
 
 	bool passed = true;
 	double deadline = time_now_d() + opt.timeout;
@@ -251,18 +261,20 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const
 			Core_Stop();
 		}
 	}
-	PSP_EndHostFrame();
+	if (gpu) {
+		gpu->EndHostFrame();
+	}
 
 	if (draw) {
 		draw->BindFramebufferAsRenderTarget(nullptr, { Draw::RPAction::CLEAR, Draw::RPAction::DONT_CARE, Draw::RPAction::DONT_CARE }, "Headless");
 		// Vulkan may get angry if we don't do a final present.
 		if (gpu)
-			gpu->CopyDisplayToOutput(true);
+			gpu->CopyDisplayToOutput(g_Config.GetDisplayLayoutConfig(DeviceOrientation::Landscape), true);
 
 		draw->EndFrame();
 	}
 
-	PSP_Shutdown();
+	PSP_Shutdown(true);
 
 	if (!opt.bench)
 		headlessHost->FlushDebugOutput();
@@ -280,6 +292,8 @@ std::vector<std::string> ReadFromListFile(const std::string &listFilename) {
 	char temp[2048]{};
 
 	if (listFilename == "-") {
+		// If you get stuck here in the debugger, you accidentally passed '@-' on the command line, meaning we expect
+		// a list of files on stdin.
 		while (scanf("%2047s", temp) == 1)
 			testFilenames.push_back(temp);
 	} else {
@@ -351,7 +365,7 @@ int main(int argc, const char* argv[])
 	GPUCore gpuCore = GPUCORE_SOFTWARE;
 	CPUCore cpuCore = CPUCore::JIT;
 	int debuggerPort = -1;
-	bool newAtrac = false;
+	bool oldAtrac = false;
 	bool outputDebugStringLog = false;
 
 	std::vector<std::string> testFilenames;
@@ -392,8 +406,8 @@ int main(int argc, const char* argv[])
 			testOptions.bench = true;
 		else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose"))
 			testOptions.verbose = true;
-		else if (!strcmp(argv[i], "--new-atrac"))
-			newAtrac = true;
+		else if (!strcmp(argv[i], "--old-atrac"))
+			oldAtrac = true;
 		else if (!strncmp(argv[i], "--graphics=", strlen("--graphics=")) && strlen(argv[i]) > strlen("--graphics="))
 		{
 			const char *gpuName = argv[i] + strlen("--graphics=");
@@ -402,8 +416,6 @@ int main(int argc, const char* argv[])
 			// There used to be a separate "null" rendering core - just use software.
 			else if (!strcasecmp(gpuName, "software") || !strcasecmp(gpuName, "null"))
 				gpuCore = GPUCORE_SOFTWARE;
-			else if (!strcasecmp(gpuName, "directx9"))
-				gpuCore = GPUCORE_DIRECTX9;
 			else if (!strcasecmp(gpuName, "directx11"))
 				gpuCore = GPUCORE_DIRECTX11;
 			else if (!strcasecmp(gpuName, "vulkan"))
@@ -481,12 +493,12 @@ int main(int argc, const char* argv[])
 	bool glWorking = headlessHost->InitGraphics(&error_string, &graphicsContext, gpuCore);
 
 	CoreParameter coreParameter;
-	coreParameter.cpuCore = cpuCore;
+	coreParameter.cpuCore = cpuCore;  // apprently this gets overwritten somehow by g_Config below.
 	coreParameter.gpuCore = glWorking ? gpuCore : GPUCORE_SOFTWARE;
 	coreParameter.graphicsContext = graphicsContext;
 	coreParameter.enableSound = false;
-	coreParameter.mountIso = mountIso ? Path(std::string(mountIso)) : Path();
-	coreParameter.mountRoot = mountRoot ? Path(std::string(mountRoot)) : Path();
+	coreParameter.mountIso = mountIso ? Path(mountIso) : Path();
+	coreParameter.mountRoot = mountRoot ? Path(mountRoot) : Path();
 	coreParameter.startBreak = false;
 	coreParameter.headLess = true;
 	coreParameter.renderScaleFactor = 1;
@@ -496,9 +508,18 @@ int main(int argc, const char* argv[])
 	coreParameter.pixelHeight = 272;
 	coreParameter.fastForward = true;
 
+	g_Config.RestoreDefaults(RestoreSettingsBits::SETTINGS | RestoreSettingsBits::CONTROLS, true);
+
+	// Somehow this affects the test execution of pspautotests/tests/gpu/vertices/morph.prx, even though
+	// we actually set the cpu core in CoreParameter above. Probably because we end up using the JIT vs non-JIT
+	// vertex decoder.
+	g_Config.iCpuCore = 0;
+
+	// NOTE: In headless mode, we never save the config. This is just for this run.
+	g_Config.iDumpFileTypes = 0;
 	g_Config.bEnableSound = false;
 	g_Config.bFirstRun = false;
-	g_Config.bIgnoreBadMemAccess = true;
+	g_Config.bIgnoreBadMemAccess = true;  // NOTE: A few tests rely on this, which is BAD: threads/mbx/refer/refer , threads/mbx/send/send, threads/vtimers/interrupt
 	// Never report from tests.
 	g_Config.sReportHost.clear();
 	g_Config.bAutoSaveSymbolMap = false;
@@ -516,7 +537,6 @@ int main(int argc, const char* argv[])
 	g_Config.iButtonPreference = PSP_SYSTEMPARAM_BUTTON_CROSS;
 	g_Config.iLockParentalLevel = 9;
 	g_Config.iInternalResolution = 1;
-	g_Config.iFastForwardMode = (int)FastForwardMode::CONTINUOUS;
 	g_Config.bEnableLogging = (fullLog || outputDebugStringLog);
 	g_Config.bSoftwareSkinning = true;
 	g_Config.bVertexDecoderJit = true;
@@ -533,7 +553,10 @@ int main(int argc, const char* argv[])
 	g_Config.iGameVolume = VOLUMEHI_FULL;
 	g_Config.iReverbVolume = VOLUMEHI_FULL;
 	g_Config.internalDataDirectory.clear();
-	g_Config.bUseExperimentalAtrac = newAtrac;
+	g_Config.bUseOldAtrac = oldAtrac;
+	g_Config.iForceEnableHLE = 0xFFFFFFFF;  // Run all modules as HLE. We don't have anything to load in this context.
+
+	// g_Config.bUseOldAtrac = true;
 
 	Path exePath = File::GetExeDirectory();
 	g_Config.flash0Directory = exePath / "assets/flash0";

@@ -84,7 +84,7 @@ public:
 
 class D3D11DrawContext : public DrawContext {
 public:
-	D3D11DrawContext(ID3D11Device *device, ID3D11DeviceContext *deviceContext, ID3D11Device1 *device1, ID3D11DeviceContext1 *deviceContext1, IDXGISwapChain *swapChain, D3D_FEATURE_LEVEL featureLevel, HWND hWnd, std::vector<std::string> deviceList, int maxInflightFrames);
+	D3D11DrawContext(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D11Device1> device1, ComPtr<ID3D11DeviceContext1> deviceContext1, ComPtr<IDXGISwapChain> swapChain, D3D_FEATURE_LEVEL featureLevel, HWND hWnd, std::vector<std::string> deviceList, int maxInflightFrames);
 	~D3D11DrawContext();
 
 	const DeviceCaps &GetDeviceCaps() const override {
@@ -160,7 +160,14 @@ public:
 
 	void BeginFrame(DebugFlags debugFlags) override;
 	void EndFrame() override;
-	void Present(PresentMode presentMode, int vblanks) override;
+	void Present(PresentMode presentMode) override;
+	PresentMode GetCurrentPresentMode() const override {
+		if (currentInterval_ == 1) {
+			return PresentMode::FIFO;
+		} else {
+			return PresentMode::IMMEDIATE;
+		}
+	}
 
 	int GetFrameCount() override { return frameCount_; }
 
@@ -272,9 +279,11 @@ private:
 	D3D_FEATURE_LEVEL featureLevel_;
 	std::string adapterDesc_;
 	std::vector<std::string> deviceList_;
+
+	int currentInterval_ = -1;
 };
 
-D3D11DrawContext::D3D11DrawContext(ID3D11Device *device, ID3D11DeviceContext *deviceContext, ID3D11Device1 *device1, ID3D11DeviceContext1 *deviceContext1, IDXGISwapChain *swapChain, D3D_FEATURE_LEVEL featureLevel, HWND hWnd, std::vector<std::string> deviceList, int maxInflightFrames)
+D3D11DrawContext::D3D11DrawContext(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext> deviceContext, ComPtr<ID3D11Device1> device1, ComPtr<ID3D11DeviceContext1> deviceContext1, ComPtr<IDXGISwapChain> swapChain, D3D_FEATURE_LEVEL featureLevel, HWND hWnd, std::vector<std::string> deviceList, int maxInflightFrames)
 	: hWnd_(hWnd),
 		device_(device),
 		context_(deviceContext1),
@@ -288,6 +297,26 @@ D3D11DrawContext::D3D11DrawContext(ID3D11Device *device, ID3D11DeviceContext *de
 	_assert_(featureLevel_ >= D3D_FEATURE_LEVEL_9_3);
 
 	caps_.coordConvention = CoordConvention::Direct3D11;
+
+	switch (featureLevel_) {
+	case D3D_FEATURE_LEVEL_11_1:
+	case D3D_FEATURE_LEVEL_11_0:
+		caps_.maxTextureSize = 16384;
+		break;
+	case D3D_FEATURE_LEVEL_10_1:
+	case D3D_FEATURE_LEVEL_10_0:
+		caps_.maxTextureSize = 8192;
+		break;
+	case D3D_FEATURE_LEVEL_9_3:
+		caps_.maxTextureSize = 4096;
+		break;
+	case D3D_FEATURE_LEVEL_9_2:
+	case D3D_FEATURE_LEVEL_9_1:
+	default:
+		caps_.maxTextureSize = 2048;
+		break;
+	}
+	caps_.maxClipPlanes = 8;
 
 	// Seems like a fair approximation...
 	caps_.dualSourceBlend = featureLevel_ >= D3D_FEATURE_LEVEL_10_0;
@@ -357,12 +386,6 @@ D3D11DrawContext::D3D11DrawContext(ID3D11Device *device, ID3D11DeviceContext *de
 
 	caps_.isTilingGPU = false;
 
-	// Hide D3D9 when we know it likely won't work well.
-	caps_.supportsD3D9 = true;
-	if (!strcmp(adapterDesc_.c_str(), "Intel(R) Iris(R) Xe Graphics")) {
-		caps_.supportsD3D9 = false;
-	}
-
 #ifndef __LIBRETRO__  // their build server uses an old SDK
 	if (swapChain_) {
 		DXGI_SWAP_CHAIN_DESC swapChainDesc;
@@ -373,6 +396,7 @@ D3D11DrawContext::D3D11DrawContext(ID3D11Device *device, ID3D11DeviceContext *de
 		}
 	}
 #endif
+
 	// Temp texture for read-back of small images. Custom textures are created on demand for larger ones.
 	// TODO: Should really benchmark if this extra complexity has any benefit.
 	D3D11_TEXTURE2D_DESC packDesc{};
@@ -483,12 +507,12 @@ void D3D11DrawContext::EndFrame() {
 	curPipeline_ = nullptr;
 }
 
-void D3D11DrawContext::Present(PresentMode presentMode, int vblanks) {
+void D3D11DrawContext::Present(PresentMode presentMode) {
 	frameTimeHistory_[frameCount_].queuePresent = time_now_d();
 
 	// Safety for libretro
 	if (swapChain_) {
-		uint32_t interval = vblanks;
+		uint32_t interval = 1;
 		uint32_t flags = 0;
 		if (presentMode != PresentMode::FIFO) {
 			interval = 0;
@@ -497,6 +521,7 @@ void D3D11DrawContext::Present(PresentMode presentMode, int vblanks) {
 #endif
 		}
 		swapChain_->Present(interval, flags);
+		currentInterval_ = interval;
 	}
 
 	curRenderTargetView_.Reset();
@@ -812,7 +837,7 @@ InputLayout *D3D11DrawContext::CreateInputLayout(const InputLayoutDesc &desc) {
 
 class D3D11ShaderModule : public ShaderModule {
 public:
-	D3D11ShaderModule(const std::string &tag) : tag_(tag) { }
+	D3D11ShaderModule(std::string_view tag) : tag_(tag) { }
 	~D3D11ShaderModule() {
 	}
 	ShaderStage GetStage() const override { return stage; }
@@ -1414,7 +1439,7 @@ void D3D11DrawContext::DrawIndexedClippedBatchUP(const void *vdata, int vertexCo
 		if (draws[i].bindTexture) {
 			ComPtr<ID3D11ShaderResourceView> view = ((D3D11Texture *)draws[i].bindTexture)->View();
 			context_->PSSetShaderResources(0, 1, view.GetAddressOf());
-		} else {
+		} else if (draws[i].bindFramebufferAsTex) {
 			ComPtr<ID3D11ShaderResourceView> view = ((D3D11Framebuffer *)draws[i].bindFramebufferAsTex)->colorSRView;
 			switch (draws[i].aspect) {
 			case Aspect::DEPTH_BIT:
@@ -1650,7 +1675,6 @@ void D3D11DrawContext::CopyFramebufferImage(Framebuffer *srcfb, int level, int x
 		break;
 	case Aspect::NO_BIT:
 	case Aspect::STENCIL_BIT:
-	case Aspect::SURFACE_BIT:
 	case Aspect::VIEW_BIT:
 	case Aspect::FORMAT_BIT:
 		break;
@@ -1747,6 +1771,7 @@ bool D3D11DrawContext::CopyFramebufferToMemory(Framebuffer *src, Aspect channelB
 		case Aspect::STENCIL_BIT:
 			if (!fb)
 				return false;
+			break;
 		default:
 			break;
 		}
@@ -1833,7 +1858,6 @@ bool D3D11DrawContext::CopyFramebufferToMemory(Framebuffer *src, Aspect channelB
 		}
 		break;
 	case Aspect::NO_BIT:
-	case Aspect::SURFACE_BIT:
 	case Aspect::VIEW_BIT:
 	case Aspect::FORMAT_BIT:
 		break;
@@ -1952,7 +1976,7 @@ void D3D11DrawContext::GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h
 	}
 }
 
-DrawContext *T3DCreateD3D11Context(ID3D11Device *device, ID3D11DeviceContext *context, ID3D11Device1 *device1, ID3D11DeviceContext1 *context1, IDXGISwapChain *swapChain, D3D_FEATURE_LEVEL featureLevel, HWND hWnd, const std::vector<std::string> &adapterNames, int maxInflightFrames) {
+DrawContext *T3DCreateD3D11Context(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext> context, ComPtr<ID3D11Device1> device1, ComPtr<ID3D11DeviceContext1> context1, ComPtr<IDXGISwapChain> swapChain, D3D_FEATURE_LEVEL featureLevel, HWND hWnd, const std::vector<std::string> &adapterNames, int maxInflightFrames) {
 	return new D3D11DrawContext(device, context, device1, context1, swapChain, featureLevel, hWnd, adapterNames, maxInflightFrames);
 }
 

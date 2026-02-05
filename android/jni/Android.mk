@@ -4,24 +4,20 @@ SRC := ../..
 include $(CLEAR_VARS)
 include $(LOCAL_PATH)/Locals.mk
 
-LOCAL_CFLAGS += -D_7ZIP_ST -D__SWITCH__
+LOCAL_CFLAGS += -DZ7_ST -D__SWITCH__
 
 LZMA_FILES := \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Alloc.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Bcj2.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Bcj2Enc.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Bra.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Bra86.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/CpuArch.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Delta.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/LzFind.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/LzFindOpt.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/LzmaDec.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/LzmaEnc.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Lzma86Dec.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Lzma86Enc.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/LzmaLib.c \
-	$(SRC)/ext/libchdr/deps/lzma-22.01/src/Sort.c
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/Alloc.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/Bra.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/Bra86.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/BraIA64.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/CpuArch.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/Delta.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/LzFind.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/LzmaDec.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/LzmaEnc.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/Lzma86Dec.c \
+	$(SRC)/ext/libchdr/deps/lzma-24.05/src/Sort.c
 
 CHDR_FILES := \
 	${LZMA_FILES} \
@@ -79,7 +75,7 @@ include $(BUILD_STATIC_LIBRARY)
 include $(CLEAR_VARS)
 include $(LOCAL_PATH)/Locals.mk
 
-LOCAL_CFLAGS += -DSTACK_LINE_READER_BUFFER_SIZE=1024 -DHAVE_DLFCN_H -DRC_DISABLE_LUA -D_7ZIP_ST
+LOCAL_CFLAGS += -DSTACK_LINE_READER_BUFFER_SIZE=1024 -DHAVE_DLFCN_H -DRC_DISABLE_LUA -DZ7_ST
 
 # http://software.intel.com/en-us/articles/getting-started-on-optimizing-ndk-project-for-multiple-cpu-architectures
 
@@ -230,6 +226,7 @@ EXT_FILES := \
   $(SRC)/ext/imgui/imgui.cpp \
   $(SRC)/ext/imgui/imgui_demo.cpp \
   $(SRC)/ext/imgui/imgui_draw.cpp \
+  $(SRC)/ext/imgui/imgui_extras.cpp \
   $(SRC)/ext/imgui/imgui_impl_thin3d.cpp \
   $(SRC)/ext/imgui/imgui_impl_platform.cpp \
   $(SRC)/ext/imgui/imgui_tables.cpp \
@@ -327,12 +324,12 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Common/GPU/ShaderTranslation.cpp \
   $(SRC)/Common/Render/ManagedTexture.cpp \
   $(SRC)/Common/Render/DrawBuffer.cpp \
+  $(SRC)/Common/Render/AtlasGen.cpp \
   $(SRC)/Common/Render/TextureAtlas.cpp \
   $(SRC)/Common/Render/Text/draw_text.cpp \
   $(SRC)/Common/Render/Text/draw_text_android.cpp \
   $(SRC)/Common/Input/GestureDetector.cpp \
   $(SRC)/Common/Input/InputState.cpp \
-  $(SRC)/Common/Math/fast/fast_matrix.c \
   $(SRC)/Common/Math/math_util.cpp \
   $(SRC)/Common/Math/Statistics.cpp \
   $(SRC)/Common/Math/curves.cpp \
@@ -363,10 +360,12 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Common/UI/Context.cpp \
   $(SRC)/Common/UI/UIScreen.cpp \
   $(SRC)/Common/UI/Tween.cpp \
+  $(SRC)/Common/UI/Notice.cpp \
   $(SRC)/Common/UI/IconCache.cpp \
   $(SRC)/Common/UI/View.cpp \
   $(SRC)/Common/UI/ViewGroup.cpp \
   $(SRC)/Common/UI/ScrollView.cpp \
+  $(SRC)/Common/UI/TabHolder.cpp \
   $(SRC)/Common/UI/PopupScreens.cpp \
   $(SRC)/Common/Serialize/Serializer.cpp \
   $(SRC)/Common/ArmCPUDetect.cpp \
@@ -432,8 +431,6 @@ ARCH_FILES := \
   $(SRC)/Core/MIPS/ARM/ArmCompFPU.cpp \
   $(SRC)/Core/MIPS/ARM/ArmCompLoadStore.cpp \
   $(SRC)/Core/MIPS/ARM/ArmCompVFPU.cpp \
-  $(SRC)/Core/MIPS/ARM/ArmCompVFPUNEON.cpp \
-  $(SRC)/Core/MIPS/ARM/ArmCompVFPUNEONUtil.cpp \
   $(SRC)/Core/MIPS/ARM/ArmCompReplace.cpp \
   $(SRC)/Core/MIPS/ARM/ArmAsm.cpp \
   $(SRC)/Core/MIPS/ARM/ArmJit.cpp \
@@ -482,7 +479,6 @@ EXEC_AND_LIB_FILES := \
   $(ARCH_FILES) \
   $(GPU_VULKAN_FILES) \
   $(SRC)/ext/xxhash.c \
-  TestRunner.cpp \
   $(SRC)/Core/MIPS/MIPS.cpp.arm \
   $(SRC)/Core/MIPS/MIPSAnalyst.cpp \
   $(SRC)/Core/MIPS/MIPSDis.cpp \
@@ -589,6 +585,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HW/SasAudio.cpp.arm \
   $(SRC)/Core/HW/SasReverb.cpp.arm \
   $(SRC)/Core/HW/StereoResampler.cpp.arm \
+  $(SRC)/Core/HW/GranularMixer.cpp.arm \
   $(SRC)/Core/ControlMapper.cpp \
   $(SRC)/Core/Core.cpp \
   $(SRC)/Core/Compatibility.cpp \
@@ -601,6 +598,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/Instance.cpp \
   $(SRC)/Core/KeyMap.cpp \
   $(SRC)/Core/KeyMapDefaults.cpp \
+  $(SRC)/Core/LuaContext.cpp \
   $(SRC)/Core/Loaders.cpp \
   $(SRC)/Core/PSPLoaders.cpp \
   $(SRC)/Core/FileLoaders/CachingFileLoader.cpp \
@@ -609,6 +607,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/FileLoaders/LocalFileLoader.cpp \
   $(SRC)/Core/FileLoaders/RamCachingFileLoader.cpp \
   $(SRC)/Core/FileLoaders/RetryingFileLoader.cpp \
+  $(SRC)/Core/FileLoaders/ZipFileLoader.cpp \
   $(SRC)/Core/MemFault.cpp \
   $(SRC)/Core/MemMap.cpp \
   $(SRC)/Core/MemMapFunctions.cpp \
@@ -616,10 +615,10 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/Replay.cpp \
   $(SRC)/Core/RetroAchievements.cpp \
   $(SRC)/Core/SaveState.cpp \
+  $(SRC)/Core/SaveStateRewind.cpp \
   $(SRC)/Core/Screenshot.cpp \
   $(SRC)/Core/System.cpp \
   $(SRC)/Core/TiltEventProcessor.cpp \
-  $(SRC)/Core/ThreadPools.cpp \
   $(SRC)/Core/WebServer.cpp \
   $(SRC)/Core/Debugger/Breakpoints.cpp \
   $(SRC)/Core/Debugger/DisassemblyManager.cpp \
@@ -711,7 +710,13 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HLE/sceNet_lib.cpp \
   $(SRC)/Core/HLE/proAdhoc.cpp \
   $(SRC)/Core/HLE/proAdhocServer.cpp \
+  $(SRC)/Core/HLE/NetAdhocCommon.cpp \
   $(SRC)/Core/HLE/sceNetAdhoc.cpp \
+  $(SRC)/ext/aemu_postoffice/client/postoffice.c \
+  $(SRC)/ext/aemu_postoffice/client/sock_impl_linux.c \
+  $(SRC)/ext/aemu_postoffice/client/mutex_impl_cpp.cpp \
+  $(SRC)/ext/aemu_postoffice/client/delay_impl_cpp.cpp \
+  $(SRC)/ext/aemu_postoffice/client/log_impl_ppsspp.cpp \
   $(SRC)/Core/HLE/sceNetAdhocMatching.cpp \
   $(SRC)/Core/HLE/sceNetApctl.cpp \
   $(SRC)/Core/HLE/sceNetInet.cpp \
@@ -722,6 +727,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HLE/sceParseHttp.cpp \
   $(SRC)/Core/HLE/sceParseUri.cpp \
   $(SRC)/Core/HLE/scePower.cpp \
+  $(SRC)/Core/HLE/sceReg.cpp \
   $(SRC)/Core/HLE/sceRtc.cpp \
   $(SRC)/Core/HLE/scePsmf.cpp \
   $(SRC)/Core/HLE/sceSas.cpp \
@@ -756,11 +762,13 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/Util/AtracTrack.cpp \
   $(SRC)/Core/Util/AudioFormat.cpp \
   $(SRC)/Core/Util/MemStick.cpp \
+  $(SRC)/Core/Util/PathUtil.cpp \
   $(SRC)/Core/Util/PortManager.cpp \
   $(SRC)/Core/Util/GameDB.cpp \
   $(SRC)/Core/Util/GameManager.cpp \
   $(SRC)/Core/Util/BlockAllocator.cpp \
   $(SRC)/Core/Util/PPGeDraw.cpp \
+  $(SRC)/Core/Util/RecentFiles.cpp \
   $(SRC)/git-version.cpp
 
 LOCAL_MODULE := ppsspp_core
@@ -857,6 +865,7 @@ LIBZSTD_FILES := \
   $(SRC)/ext/zstd/lib/compress/zstd_lazy.c \
   $(SRC)/ext/zstd/lib/compress/zstd_ldm.c \
   $(SRC)/ext/zstd/lib/compress/zstd_opt.c \
+  $(SRC)/ext/zstd/lib/compress/zstd_preSplit.c \
   $(SRC)/ext/zstd/lib/compress/zstdmt_compress.c \
   $(SRC)/ext/zstd/lib/decompress/huf_decompress.c \
   $(SRC)/ext/zstd/lib/decompress/zstd_ddict.c \
@@ -889,8 +898,10 @@ LOCAL_SRC_FILES := \
   $(SRC)/android/jni/OpenSLContext.cpp \
   $(SRC)/UI/ImDebugger/ImDebugger.cpp \
   $(SRC)/UI/ImDebugger/ImGe.cpp \
+  $(SRC)/UI/ImDebugger/ImConsole.cpp \
   $(SRC)/UI/ImDebugger/ImDisasmView.cpp \
   $(SRC)/UI/ImDebugger/ImMemView.cpp \
+  $(SRC)/UI/ImDebugger/ImJitViewer.cpp \
   $(SRC)/UI/ImDebugger/ImStructViewer.cpp \
   $(SRC)/UI/AudioCommon.cpp \
   $(SRC)/UI/BackgroundAudio.cpp \
@@ -903,23 +914,31 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/EmuScreen.cpp \
   $(SRC)/UI/MainScreen.cpp \
   $(SRC)/UI/TabbedDialogScreen.cpp \
+  $(SRC)/UI/SimpleDialogScreen.cpp \
   $(SRC)/UI/MemStickScreen.cpp \
+  $(SRC)/UI/IAPScreen.cpp \
   $(SRC)/UI/MiscScreens.cpp \
+  $(SRC)/UI/MiscViews.cpp \
   $(SRC)/UI/RemoteISOScreen.cpp \
   $(SRC)/UI/ReportScreen.cpp \
   $(SRC)/UI/PauseScreen.cpp \
   $(SRC)/UI/SavedataScreen.cpp \
   $(SRC)/UI/Store.cpp \
+  $(SRC)/UI/SystemInfoScreen.cpp \
   $(SRC)/UI/GamepadEmu.cpp \
   $(SRC)/UI/JoystickHistoryView.cpp \
   $(SRC)/UI/GameInfoCache.cpp \
   $(SRC)/UI/GameScreen.cpp \
+  $(SRC)/UI/UploadScreen.cpp \
   $(SRC)/UI/ControlMappingScreen.cpp \
   $(SRC)/UI/GameSettingsScreen.cpp \
+  $(SRC)/UI/DeveloperToolsScreen.cpp \
   $(SRC)/UI/GPUDriverTestScreen.cpp \
   $(SRC)/UI/TiltAnalogSettingsScreen.cpp \
   $(SRC)/UI/TouchControlLayoutScreen.cpp \
   $(SRC)/UI/TouchControlVisibilityScreen.cpp \
+  $(SRC)/UI/BaseScreens.cpp \
+  $(SRC)/UI/Background.cpp \
   $(SRC)/UI/CwCheatScreen.cpp \
   $(SRC)/UI/InstallZipScreen.cpp \
   $(SRC)/UI/JitCompareScreen.cpp \
@@ -927,6 +946,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/ProfilerDraw.cpp \
   $(SRC)/UI/NativeApp.cpp \
   $(SRC)/UI/Theme.cpp \
+  $(SRC)/UI/UIAtlas.cpp \
   $(SRC)/UI/CustomButtonMappingScreen.cpp \
   $(SRC)/UI/RetroAchievementScreens.cpp
 
@@ -974,13 +994,16 @@ ifeq ($(UNITTEST),1)
       $(SRC)/Common/ArmEmitter.cpp \
       $(SRC)/Common/Arm64Emitter.cpp \
       $(SRC)/Common/RiscVEmitter.cpp \
+      $(SRC)/Common/LoongArch64Emitter.cpp \
       $(SRC)/Core/MIPS/ARM/ArmRegCacheFPU.cpp \
       $(SRC)/Core/Util/DisArm64.cpp \
       $(SRC)/ext/disarm.cpp \
       $(SRC)/ext/riscv-disas.cpp \
+      $(SRC)/ext/loongarch-disasm.cpp \
       $(SRC)/unittest/TestArmEmitter.cpp \
       $(SRC)/unittest/TestArm64Emitter.cpp \
       $(SRC)/unittest/TestRiscVEmitter.cpp \
+      $(SRC)/unittest/TestLoongArch64Emitter.cpp \
       $(SRC)/unittest/TestX64Emitter.cpp
   endif
 

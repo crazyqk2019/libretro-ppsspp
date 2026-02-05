@@ -35,6 +35,7 @@
 #include "Common/Thread/ThreadUtil.h"
 #include "Common/System/OSD.h"
 #include "Common/Log.h"
+#include "Common/StringUtils.h"
 #include "Core/Config.h"
 #include "Core/Core.h"
 #include "Core/System.h"
@@ -200,7 +201,7 @@ bool PortManager::Initialize(const unsigned int timeout) {
 	ERROR_LOG(Log::sceNet, "PortManager - upnpDiscover failed (error: %i) or No UPnP device detected", error);
 	if (g_Config.bEnableUPnP) {
 		auto n = GetI18NCategory(I18NCat::NETWORKING);
-		g_OSD.Show(OSDType::MESSAGE_ERROR, n->T("Unable to find UPnP device"));
+		g_OSD.Show(OSDType::MESSAGE_ERROR, StringFromFormat("%s (%d)", n->T_cstr("Unable to find UPnP device"), error), 0.0f, "upnp_warning");
 	}
 	m_InitState = UPNP_INITSTATE_NONE;
 #endif // WITH_UPNP
@@ -469,15 +470,14 @@ bool PortManager::RefreshPortList() {
 #endif // WITH_UPNP
 }
 
-int upnpService(const unsigned int timeout)
-{
+int upnpService(const unsigned int timeout) {
 	SetCurrentThreadName("UPnPService");
 	INFO_LOG(Log::sceNet, "UPnPService: Begin of UPnPService Thread");
 
 	// Service Loop
-	while (upnpServiceRunning && coreState != CORE_POWERDOWN) {
+	while (upnpServiceRunning) {
 		// Sleep for 1ms for faster response if active, otherwise sleep longer (TODO: Improve on this).
-		sleep_ms(g_Config.bEnableUPnP ? 1 : 100, "upnp-poll");
+		sleep_ms(g_Config.bEnableUPnP ? 1 : 500, "upnp-poll");
 
 		// Attempts to reconnect if not connected yet or got disconnected
 		if (g_Config.bEnableUPnP && g_PortManager.GetInitState() == UPNP_INITSTATE_NONE) {
@@ -524,10 +524,10 @@ int upnpService(const unsigned int timeout)
 	return 0;
 }
 
-void __UPnPInit(const unsigned int timeout) {
+void __UPnPInit(const int timeout_ms) {
 	if (!upnpServiceRunning) {
 		upnpServiceRunning = true;
-		upnpServiceThread = std::thread(upnpService, timeout);
+		upnpServiceThread = std::thread(upnpService, timeout_ms);
 	}
 }
 

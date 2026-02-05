@@ -46,7 +46,7 @@
 
 #include "UI/AudioCommon.h"
 
-#include "libretro/libretro.h"
+#include <libretro.h>
 #include "libretro/LibretroGraphicsContext.h"
 #include "libretro/libretro_core_options.h"
 
@@ -94,6 +94,9 @@ static bool show_upnp_port_option = true;
 static bool show_detect_frame_rate_option = true;
 static std::string changeProAdhocServer;
 
+void* unserialize_data = NULL;
+size_t unserialize_size = 0;
+
 namespace Libretro
 {
    LibretroGraphicsContext *ctx;
@@ -103,6 +106,9 @@ namespace Libretro
    static retro_input_poll_t input_poll_cb;
    static retro_input_state_t input_state_cb;
    static retro_log_printf_t log_cb;
+
+   bool g_pendingBoot = false;
+   std::string g_bootErrorString;
 
    static bool detectVsyncSwapInterval = false;
    static bool detectVsyncSwapIntervalOptShown = true;
@@ -395,11 +401,11 @@ void retro_set_environment(retro_environment_t cb)
    update_display_cb.callback = set_variable_visibility;
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK, &update_display_cb);
 
-   #ifdef HAVE_LIBRETRO_VFS
-      struct retro_vfs_interface_info vfs_iface_info { 1, nullptr };
-      if (cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE, &vfs_iface_info))
-         filestream_vfs_init(&vfs_iface_info);
-   #endif
+#ifdef HAVE_LIBRETRO_VFS
+   struct retro_vfs_interface_info vfs_iface_info { 2, nullptr };
+   if (cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE, &vfs_iface_info))
+      File::InitLibretroVFS(&vfs_iface_info);
+#endif
 }
 
 static int get_language_auto(void)
@@ -470,21 +476,18 @@ static std::string map_psp_language_to_i18n_locale(int val)
    }
 }
 
-static void check_variables(CoreParameter &coreParam)
-{
+static void check_dynamic_variables(CoreParameter &coreParam) {
    if (g_Config.bForceLagSync)
    {
       bool isFastForwarding;
       if (environ_cb(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &isFastForwarding))
-          coreParam.fastForward = isFastForwarding;
+         coreParam.fastForward = isFastForwarding;
    }
+}
 
-   bool updated = false;
-
-   if (     coreState != CoreState::CORE_POWERUP
-         && environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated)
-         && !updated)
-      return;
+static void check_variables(CoreParameter &coreParam)
+{
+   check_dynamic_variables(coreParam);
 
    struct retro_variable var = {0};
    std::string sTextureShaderName_prev;
@@ -643,7 +646,7 @@ static void check_variables(CoreParameter &coreParam)
    var.key = "ppsspp_analog_sensitivity";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
       g_Config.fAnalogSensitivity = atof(var.value);
-   
+
    var.key = "ppsspp_memstick_inserted";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
@@ -729,15 +732,6 @@ static void check_variables(CoreParameter &coreParam)
    var.key = "ppsspp_frameskip";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
       g_Config.iFrameSkip = atoi(var.value);
-
-   var.key = "ppsspp_frameskiptype";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      if (!strcmp(var.value, "Number of frames"))
-         g_Config.iFrameSkipType = 0;
-      else if (!strcmp(var.value, "Percent of FPS"))
-         g_Config.iFrameSkipType = 1;
-   }
 
    var.key = "ppsspp_auto_frameskip";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -1032,7 +1026,7 @@ static void check_variables(CoreParameter &coreParam)
    char key[64] = {0};
    var.key = key;
    g_Config.sMACAddress = "";
-   g_Config.proAdhocServer = "";
+   g_Config.sProAdhocServer = "";
    for (int i = 0; i < 12; i++)
    {
       snprintf(key, sizeof(key), "ppsspp_change_mac_address%02d", i + 1);
@@ -1066,13 +1060,13 @@ static void check_variables(CoreParameter &coreParam)
 
    if (changeProAdhocServer == "IP address")
    {
-      g_Config.proAdhocServer = "";
+      g_Config.sProAdhocServer = "";
       bool leadingZero = true;
       for (int i = 0; i < 12; i++)
       {
          if (i && i % 3 == 0)
          {
-            g_Config.proAdhocServer += '.';
+            g_Config.sProAdhocServer += '.';
             leadingZero = true;
          }
 
@@ -1081,11 +1075,11 @@ static void check_variables(CoreParameter &coreParam)
             leadingZero = false; // We are either non-zero or the last digit of a byte
 
          if (! leadingZero)
-            g_Config.proAdhocServer += static_cast<char>('0' + addressPt);
+            g_Config.sProAdhocServer += static_cast<char>('0' + addressPt);
       }
    }
    else
-      g_Config.proAdhocServer = changeProAdhocServer;
+      g_Config.sProAdhocServer = changeProAdhocServer;
 
    g_Config.bTexHardwareScaling = g_Config.sTextureShaderName != "Off";
 
@@ -1145,7 +1139,8 @@ static void check_variables(CoreParameter &coreParam)
    {
       if (gpu)
       {
-         gpu->NotifyRenderResized();
+         const DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(g_display.GetDeviceOrientation());
+         gpu->NotifyRenderResized(config);
       }
    }
 
@@ -1244,6 +1239,42 @@ void retro_init(void)
 
    retro_base_dir /= "PPSSPP";
 
+   // Check if '<system_dir>/PPSSPP/compat.ini' exists, if not we can assume
+   // the user is missing the assets entirely, so let's warn them about it.
+   if (!File::Exists(Path(retro_base_dir / "compat.ini")))
+   {
+      const char* str = "Core system files missing, expect bugs.";
+      unsigned msg_interface_version = 0;
+      environ_cb(RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION, &msg_interface_version);
+
+      if (msg_interface_version >= 1)
+      {
+         retro_message_ext msg = {
+            str,
+            3000,
+            3,
+            RETRO_LOG_WARN,
+            RETRO_MESSAGE_TARGET_ALL,
+            RETRO_MESSAGE_TYPE_NOTIFICATION,
+            -1
+         };
+         environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE_EXT, &msg);
+      }
+      else
+      {
+         retro_message msg = {
+            str,
+            180
+         };
+         environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &msg);
+      }
+
+      // OSD messages should be kept pretty short, but
+      // let's give the user a bit more info in logs.
+      WARN_LOG(Log::System, "Please check the docs for more informations on how to install "
+                            "the PPSSPP assets: https://docs.libretro.com/library/ppsspp/");
+   }
+
    g_Config.currentDirectory = retro_base_dir;
    g_Config.defaultCurrentDirectory = retro_base_dir;
    g_Config.memStickDirectory = retro_save_dir;
@@ -1293,6 +1324,8 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
    info->timing.fps            = (60.0 / 1.001) / (double)vsyncSwapInterval;
    info->timing.sample_rate    = SAMPLERATE;
 
+   _dbg_assert_(g_Config.iInternalResolution != 0);
+
    info->geometry.base_width   = g_Config.iInternalResolution * NATIVEWIDTH;
    info->geometry.base_height  = g_Config.iInternalResolution * NATIVEHEIGHT;
    info->geometry.max_width    = g_Config.iInternalResolution * NATIVEWIDTH;
@@ -1323,19 +1356,33 @@ namespace Libretro
    static void EmuFrame()
    {
       ctx->SetRenderTarget();
-      if (ctx->GetDrawContext())
+      if (ctx->GetDrawContext()) {
          ctx->GetDrawContext()->BeginFrame(Draw::DebugFlags::NONE);
+      }
 
-      gpu->BeginHostFrame();
+      if (gpu) {
+         const DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(g_display.GetDeviceOrientation());
+         gpu->BeginHostFrame(config);
+      }
 
-      coreState = CORE_RUNNING_CPU;
       PSP_RunLoopWhileState();
+      switch (coreState) {
+      case CORE_NEXTFRAME:
+      case CORE_POWERDOWN:
+         // Reached the end of the frame while running at full blast, all good. Set back to running for the next frame
+         coreState = CORE_RUNNING_CPU;
+         break;
+      default:
+         // We're not handling the various states used for debugging in the libretro port.
+         break;
+      }
 
-      gpu->EndHostFrame();
+      if (gpu)
+         gpu->EndHostFrame();
 
       if (ctx->GetDrawContext()) {
          ctx->GetDrawContext()->EndFrame();
-         ctx->GetDrawContext()->Present(Draw::PresentMode::FIFO, 1);
+         ctx->GetDrawContext()->Present(Draw::PresentMode::FIFO);
       }
    }
 
@@ -1349,20 +1396,19 @@ namespace Libretro
          {
             case EmuThreadState::START_REQUESTED:
                emuThreadState = EmuThreadState::RUNNING;
-               /* fallthrough */
+               [[fallthrough]];
             case EmuThreadState::RUNNING:
                EmuFrame();
                break;
             case EmuThreadState::PAUSE_REQUESTED:
                emuThreadState = EmuThreadState::PAUSED;
-               /* fallthrough */
+               [[fallthrough]];
             case EmuThreadState::PAUSED:
                sleep_ms(1, "libretro-paused");
                break;
             default:
             case EmuThreadState::QUIT_REQUESTED:
                emuThreadState = EmuThreadState::STOPPED;
-               ctx->StopThread();
                return;
          }
       }
@@ -1388,8 +1434,9 @@ namespace Libretro
       emuThreadState = EmuThreadState::QUIT_REQUESTED;
 
       // Need to keep eating frames to allow the EmuThread to exit correctly.
-      while (ctx->ThreadFrame())
-         ;
+      ctx->ThreadFrameUntilCondition([]() -> bool {
+         return emuThreadState == EmuThreadState::STOPPED;
+      });
 
       emuThread.join();
       emuThread = std::thread();
@@ -1403,7 +1450,8 @@ namespace Libretro
 
       emuThreadState = EmuThreadState::PAUSE_REQUESTED;
 
-      ctx->ThreadFrame(); // Eat 1 frame
+      // Is this safe?
+      ctx->ThreadFrame(true); // Eat 1 frame
 
       while (emuThreadState != EmuThreadState::PAUSED)
          sleep_ms(1, "libretro-pause-poll");
@@ -1425,7 +1473,7 @@ static void retro_check_backend(void)
       else if (!strcmp(var.value, "vulkan"))
          backend = RETRO_HW_CONTEXT_VULKAN;
       else if (!strcmp(var.value, "d3d11"))
-         backend = RETRO_HW_CONTEXT_DIRECT3D;
+         backend = RETRO_HW_CONTEXT_D3D11;
       else if (!strcmp(var.value, "none"))
          backend = RETRO_HW_CONTEXT_NONE;
    }
@@ -1442,8 +1490,8 @@ bool retro_load_game(const struct retro_game_info *game)
 
    retro_check_backend();
 
-   coreState = CORE_POWERUP;
    ctx       = LibretroGraphicsContext::CreateGraphicsContext();
+
    INFO_LOG(Log::System, "Using %s backend", ctx->Ident());
 
    Core_SetGraphicsContext(ctx);
@@ -1452,14 +1500,14 @@ bool retro_load_game(const struct retro_game_info *game)
    useEmuThread              = ctx->GetGPUCore() == GPUCORE_GLES;
 
    // default to interpreter to allow startup in platforms w/o JIT capability
+   // TODO: I guess we should auto detect? And also, default to IR Interpreter...
    g_Config.iCpuCore         = (int)CPUCore::INTERPRETER;
 
    CoreParameter coreParam   = {};
    coreParam.enableSound     = true;
-   coreParam.fileToStart     = Path(std::string(game->path));
-   coreParam.mountIso.clear();
+   coreParam.fileToStart     = Path(game->path);
    coreParam.startBreak      = false;
-   coreParam.headLess        = true;
+   coreParam.headLess        = true;  // really?
    coreParam.graphicsContext = ctx;
    coreParam.gpuCore         = ctx->GetGPUCore();
    check_variables(coreParam);
@@ -1473,12 +1521,7 @@ bool retro_load_game(const struct retro_game_info *game)
    // set cpuCore from libretro setting variable
    coreParam.cpuCore         =  (CPUCore)g_Config.iCpuCore;
 
-   std::string error_string;
-   if (!PSP_InitStart(coreParam, &error_string))
-   {
-      ERROR_LOG(Log::Boot, "%s", error_string.c_str());
-      return false;
-   }
+   g_pendingBoot = true;
 
    struct retro_core_option_display option_display;
 
@@ -1491,11 +1534,23 @@ bool retro_load_game(const struct retro_game_info *game)
 
    // Show/hide 'Buffered Frames' option, Vulkan/GL only
    option_display.visible = (g_Config.iGPUBackend == (int)GPUBackend::VULKAN ||
-         g_Config.iGPUBackend == (int)GPUBackend::OPENGL);
+      g_Config.iGPUBackend == (int)GPUBackend::OPENGL);
    option_display.key = "ppsspp_inflight_frames";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
    set_variable_visibility();
+
+   // NOTE: At this point we haven't really booted yet, but "in-game" we'll just keep polling
+   // PSP_InitUpdate until done.
+
+   // Launch the init process.
+   if (!PSP_InitStart(coreParam)) {
+      g_bootErrorString = coreParam.errorString;
+      // Can't really fail, the errors normally happen later during InitUpdate
+      ERROR_LOG(Log::Boot, "%s", g_bootErrorString.c_str());
+      g_pendingBoot = false;
+      return false;
+   }
 
    return true;
 }
@@ -1505,7 +1560,7 @@ void retro_unload_game(void)
 	if (Libretro::useEmuThread)
 		Libretro::EmuThreadStop();
 
-	PSP_Shutdown();
+	PSP_Shutdown(true);
 	g_VFS.Clear();
 
 	delete ctx;
@@ -1515,13 +1570,11 @@ void retro_unload_game(void)
 
 void retro_reset(void)
 {
-   std::string error_string;
+   PSP_Shutdown(true);
 
-   PSP_Shutdown();
-
-   if (!PSP_Init(PSP_CoreParameter(), &error_string))
+   if (BootState::Complete != PSP_Init(PSP_CoreParameter(), &g_bootErrorString))
    {
-      ERROR_LOG(Log::Boot, "%s", error_string.c_str());
+      ERROR_LOG(Log::Boot, "%s", g_bootErrorString.c_str());
       environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, nullptr);
    }
 }
@@ -1626,29 +1679,57 @@ static void retro_input(void)
 
 void retro_run(void)
 {
-   if (PSP_IsIniting())
-   {
-      std::string error_string;
-      while (!PSP_InitUpdate(&error_string))
-         sleep_ms(4, "libretro-init-poll");
-
-      if (!PSP_IsInited())
-      {
-         ERROR_LOG(Log::Boot, "%s", error_string.c_str());
+   if (g_pendingBoot) {
+      BootState state = PSP_InitUpdate(&g_bootErrorString);
+      switch (state) {
+      case BootState::Failed:
+         g_pendingBoot = false;
+         ERROR_LOG(Log::Boot, "%s", g_bootErrorString.c_str());
          environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, nullptr);
          return;
+      case BootState::Booting:
+         // Not done yet. Do maintenance stuff and bail.
+         retro_input();
+         ctx->SwapBuffers();
+         return;
+      case BootState::Off:
+         // shouldn't happen.
+         _dbg_assert_(false);
+         return;
+      case BootState::Complete:
+         // done, continue.
+         break;
       }
 
-      if (softwareRenderInitHack)
-      {
-         log_cb(RETRO_LOG_DEBUG, "Software rendering init hack for opengl triggered.\n");
-         softwareRenderInitHack = false;
-         g_Config.bSoftwareRendering = true;
-         retro_reset();
+      // BootState is BootState::Complete.
+      // Here's where we finish the boot process.
+      coreState = CORE_RUNNING_CPU;
+      g_bootErrorString.clear();
+      g_pendingBoot = false;
+
+      if (unserialize_data) {
+         retro_unserialize(unserialize_data, unserialize_size);
+
+         free(unserialize_data);
+         unserialize_data = NULL;
       }
    }
 
-   check_variables(PSP_CoreParameter());
+   // TODO: This seems dubious.
+   if (softwareRenderInitHack)
+   {
+      log_cb(RETRO_LOG_DEBUG, "Software rendering init hack for opengl triggered.\n");
+      softwareRenderInitHack = false;
+      g_Config.bSoftwareRendering = true;
+      retro_reset();
+   }
+
+   bool updated;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated)
+      && updated)
+      check_variables(PSP_CoreParameter());
+   else
+      check_dynamic_variables(PSP_CoreParameter());
 
    retro_input();
 
@@ -1665,7 +1746,7 @@ void retro_run(void)
       if (emuThreadState != EmuThreadState::RUNNING)
          EmuThreadStart();
 
-      if (!ctx->ThreadFrame())
+      if (!ctx->ThreadFrame(true))
       {
          VsyncSwapIntervalDetect();
          return;
@@ -1730,8 +1811,13 @@ bool retro_serialize(void *data, size_t size)
 
 bool retro_unserialize(const void *data, size_t size)
 {
-   if (!gpu) // The HW renderer isn't ready on first pass.
-      return false;
+   // The HW renderer isn't ready on first pass.
+   // So we save the data until we are ready to use it.
+   if (!gpu) {
+      unserialize_data = malloc(size);
+      memcpy(unserialize_data, data, size);
+      return true;
+   }
 
    // TODO: Libretro API extension to use the savestate queue
    if (useEmuThread)
@@ -1771,10 +1857,11 @@ void retro_cheat_reset(void) {
    Path file=cheatEngine->CheatFilename();
 
    // Output cheats to cheat file
-   std::ofstream outFile;
-   outFile.open(file.c_str());
-   outFile << "_S " << g_paramSFO.GetDiscID() << std::endl;
-   outFile.close();
+   FILE *outFile = File::OpenCFile(file, "wb");
+   if (outFile != nullptr) {
+      fprintf(outFile, "_S %s\n", g_paramSFO.GetDiscID().c_str());
+      fclose(outFile);
+   }
 
    g_Config.bReloadCheats = true;
 
@@ -1794,10 +1881,20 @@ void retro_cheat_set(unsigned index, bool enabled, const char *code) {
 
    // Read cheats file
    std::vector<std::string> cheats;
-   std::ifstream cheat_content(file.c_str());
-   std::stringstream buffer;
-   buffer << cheat_content.rdbuf();
-   std::string existing_cheats=ReplaceAll(buffer.str(), std::string("\n_C"), std::string("|"));
+   std::string cheat_content;
+   FILE *inFile = File::OpenCFile(file, "rb");
+   if (inFile != nullptr) {
+      std::array<uint8_t, 4096> buffer;
+      for (;;) {
+         size_t n = fread(buffer.data(), 1, buffer.size(), inFile);
+         cheat_content.append((const char *)buffer.data(), n);
+         if (n < buffer.size()) {
+            break;
+         }
+      }
+      fclose(inFile);
+   }
+   std::string existing_cheats=ReplaceAll(cheat_content, std::string("\n_C"), std::string("|"));
    SplitString(existing_cheats, '|', cheats);
 
    // Generate Cheat String
@@ -1829,13 +1926,14 @@ void retro_cheat_set(unsigned index, bool enabled, const char *code) {
    }
 
    // Output cheats to cheat file
-   std::ofstream outFile;
-   outFile.open(file.c_str());
-   outFile << "_S " << g_paramSFO.GetDiscID() << std::endl;
-   for (int i=1; i < cheats.size(); i++) {
-      outFile << "_C" << cheats[i] << std::endl;
+   FILE *outFile = File::OpenCFile(file, "wb");
+   if (outFile != nullptr) {
+      fprintf(outFile, "_S %s\n", g_paramSFO.GetDiscID().c_str());
+      for (const std::string &cheat : cheats) {
+         fprintf(outFile, "_C%s\n", cheat.c_str());
+      }
+      fclose(outFile);
    }
-   outFile.close();
 
    g_Config.bReloadCheats = true;
 
@@ -1846,10 +1944,8 @@ void retro_cheat_set(unsigned index, bool enabled, const char *code) {
    }
 }
 
-int64_t System_GetPropertyInt(SystemProperty prop)
-{
-   switch (prop)
-   {
+int64_t System_GetPropertyInt(SystemProperty prop) {
+   switch (prop) {
       case SYSPROP_AUDIO_SAMPLE_RATE:
          return SAMPLERATE;
 #if PPSSPP_PLATFORM(ANDROID)
@@ -1912,7 +2008,7 @@ void System_Notify(SystemNotification notification) {
    }
 }
 bool System_MakeRequest(SystemRequestType type, int requestId, const std::string &param1, const std::string &param2, int64_t param3, int64_t param4) { return false; }
-void System_PostUIMessage(UIMessage message, const std::string &param) {}
+void System_PostUIMessage(UIMessage message, std::string_view param) {}
 void System_RunOnMainThread(std::function<void()>) {}
 void NativeFrame(GraphicsContext *graphicsContext) {}
 void NativeResized() {}
@@ -1955,7 +2051,10 @@ void System_AudioClear() {}
 std::vector<std::string> System_GetCameraDeviceList() { return std::vector<std::string>(); }
 bool System_AudioRecordingIsAvailable() { return false; }
 bool System_AudioRecordingState() { return false; }
-
+#elif PPSSPP_PLATFORM(MAC)
+std::vector<std::string> __mac_getDeviceList() { return std::vector<std::string>(); }
+int __mac_startCapture(int width, int height) { return 0; }
+int __mac_stopCapture() { return 0; }
 #endif
 
 // TODO: To avoid having to define these here, these should probably be turned into system "requests".

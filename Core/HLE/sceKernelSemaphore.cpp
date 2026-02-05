@@ -20,6 +20,7 @@
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Common/Serialize/SerializeMap.h"
 #include "Core/HLE/HLE.h"
+#include "Core/HLE/ErrorCodes.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/CoreTiming.h"
 #include "Core/MemMapHelpers.h"
@@ -198,10 +199,13 @@ int sceKernelCancelSema(SceUID id, int newCount, u32 numWaitThreadsPtr)
 }
 
 int sceKernelCreateSema(const char* name, u32 attr, int initVal, int maxVal, u32 optionPtr) {
-	if (!name)
+	if (!name) {
+		// This is strangely quite common! Some shared library must be doing this.
 		return hleLogWarning(Log::sceKernel, SCE_KERNEL_ERROR_ERROR, "invalid name");
-	if (attr >= 0x200)
+	}
+	if (attr >= 0x200) {
 		return hleLogWarning(Log::sceKernel, SCE_KERNEL_ERROR_ILLEGAL_ATTR, "invalid attr parameter %08x", attr);
+	}
 
 	PSPSemaphore *s = new PSPSemaphore();
 	SceUID id = kernelObjects.Create(s);
@@ -270,7 +274,12 @@ int sceKernelSignalSema(SceUID id, int signal) {
 	u32 error;
 	PSPSemaphore *s = kernelObjects.Get<PSPSemaphore>(id, error);
 	if (!s) {
-		return hleLogError(Log::sceKernel, error, "bad sema id");
+		if (id == 0 && error == SCE_KERNEL_ERROR_UNKNOWN_SEMID) {
+			// See #20111. Prevents logspam.
+			return hleLogDebug(Log::sceKernel, error, "bad sema id");
+		} else {
+			return hleLogError(Log::sceKernel, error, "bad sema id");
+		}
 	} else {
 		if (s->ns.currentCount + signal - (int) s->waitingThreads.size() > s->ns.maxCount) {
 			return hleLogDebug(Log::sceKernel, SCE_KERNEL_ERROR_SEMA_OVF, "overflow at %d", s->ns.currentCount);
@@ -370,11 +379,23 @@ static int __KernelWaitSema(SceUID id, int wantedCount, u32 timeoutPtr, bool pro
 
 int sceKernelWaitSema(SceUID id, int wantedCount, u32 timeoutPtr) {
 	int result = __KernelWaitSema(id, wantedCount, timeoutPtr, false);
+
+	if (id == 0 && result == SCE_KERNEL_ERROR_UNKNOWN_SEMID) {
+		// See #20111. Prevents logspam.
+		return hleLogDebug(Log::sceKernel, result, "bad sema id");
+	}
+
 	return hleLogDebugOrError(Log::sceKernel, result);
 }
 
 int sceKernelWaitSemaCB(SceUID id, int wantedCount, u32 timeoutPtr) {
 	int result = __KernelWaitSema(id, wantedCount, timeoutPtr, true);
+
+	if (id == 0 && result == SCE_KERNEL_ERROR_UNKNOWN_SEMID) {
+		// See #20111. Prevents logspam.
+		return hleLogDebug(Log::sceKernel, result, "bad sema id");
+	}
+
 	return hleLogDebugOrError(Log::sceKernel, result);
 }
 
@@ -397,34 +418,4 @@ int sceKernelPollSema(SceUID id, int wantedCount) {
 		// this is OK.
 		return hleLogDebug(Log::sceKernel, SCE_KERNEL_ERROR_SEMA_ZERO);
 	}
-}
-
-// The below functions don't really belong to sceKernelSemaphore. They are the core crypto functionality,
-// exposed through the confusingly named "sceUtilsBufferCopyWithRange" name, which Sony placed in the
-// not-at-all-suspicious "semaphore" library, which has nothing to do with semaphores.
-
-static u32 sceUtilsBufferCopyWithRange(u32 outAddr, int outSize, u32 inAddr, int inSize, int cmd) {
-	u8 *outAddress = Memory::IsValidRange(outAddr, outSize) ? Memory::GetPointerWriteUnchecked(outAddr) : nullptr;
-	const u8 *inAddress = Memory::IsValidRange(inAddr, inSize) ? Memory::GetPointerUnchecked(inAddr) : nullptr;
-	int temp = kirk_sceUtilsBufferCopyWithRange(outAddress, outSize, inAddress, inSize, cmd);
-	if (temp != 0) {
-		ERROR_LOG(Log::sceKernel, "hleUtilsBufferCopyWithRange: Failed with %d", temp);
-	}
-	return hleNoLog(0);
-}
-
-// Note sure what difference there is between this and sceUtilsBufferCopyWithRange.
-static int sceUtilsBufferCopyByPollingWithRange(u32 outAddr, int outSize, u32 inAddr, int inSize, int cmd) {
-	u8 *outAddress = Memory::IsValidRange(outAddr, outSize) ? Memory::GetPointerWriteUnchecked(outAddr) : nullptr;
-	const u8 *inAddress = Memory::IsValidRange(inAddr, inSize) ? Memory::GetPointerUnchecked(inAddr) : nullptr;
-	return hleNoLog(kirk_sceUtilsBufferCopyWithRange(outAddress, outSize, inAddress, inSize, cmd));
-}
-
-const HLEFunction semaphore[] = {
-	{0x4C537C72, &WrapU_UIUII<sceUtilsBufferCopyWithRange>,          "sceUtilsBufferCopyWithRange",                   'x', "xixii" },
-	{0x77E97079, &WrapI_UIUII<sceUtilsBufferCopyByPollingWithRange>, "sceUtilsBufferCopyByPollingWithRange",          'i', "xixii"  },
-};
-
-void Register_semaphore() {
-	RegisterModule("semaphore", ARRAY_SIZE(semaphore), semaphore);
 }

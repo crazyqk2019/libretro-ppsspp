@@ -12,27 +12,7 @@
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/System.h"
-
-
-#ifdef _DEBUG
-static const bool g_Validate = true;
-#else
-static const bool g_Validate = false;
-#endif
-
-// TODO: Share this between backends.
-static uint32_t FlagsFromConfig() {
-	uint32_t flags;
-	if (g_Config.bVSync) {
-		flags = VULKAN_FLAG_PRESENT_FIFO;
-	} else {
-		flags = VULKAN_FLAG_PRESENT_MAILBOX | VULKAN_FLAG_PRESENT_IMMEDIATE;
-	}
-	if (g_Validate) {
-		flags |= VULKAN_FLAG_VALIDATE;
-	}
-	return flags;
-}
+#include "GPU/Vulkan/VulkanUtil.h"
 
 AndroidVulkanContext::AndroidVulkanContext() {}
 
@@ -49,9 +29,6 @@ bool AndroidVulkanContext::InitAPI() {
 	g_LogOptions.breakOnWarning = true;
 	g_LogOptions.msgBoxOnError = false;
 
-	INFO_LOG(Log::G3D, "Creating Vulkan context");
-	Version gitVer(PPSSPP_GIT_VERSION);
-
 	std::string errorStr;
 	if (!VulkanLoad(&errorStr)) {
 		ERROR_LOG(Log::G3D, "Failed to load Vulkan driver library: %s", errorStr.c_str());
@@ -60,14 +37,15 @@ bool AndroidVulkanContext::InitAPI() {
 	}
 
 	if (!g_Vulkan) {
-		// TODO: Assert if g_Vulkan already exists here?
+		// TODO: Assert if g_Vulkan already exists here ?
+		INFO_LOG(Log::G3D, "Creating Vulkan context.");
 		g_Vulkan = new VulkanContext();
+	} else {
+		INFO_LOG(Log::G3D, "Reusing existing Vulkan context.");
 	}
 
 	VulkanContext::CreateInfo info{};
-	info.app_name = "PPSSPP";
-	info.app_ver = gitVer.ToInteger();
-	info.flags = FlagsFromConfig();
+	InitVulkanCreateInfoFromConfig(&info);
 	if (!g_Vulkan->CreateInstanceAndDevice(info)) {
 		delete g_Vulkan;
 		g_Vulkan = nullptr;
@@ -93,31 +71,36 @@ bool AndroidVulkanContext::InitFromRenderThread(ANativeWindow *wnd, int desiredB
 		return false;
 	}
 
-	bool success = false;
-	if (g_Vulkan->InitSwapchain()) {
-		bool useMultiThreading = g_Config.bRenderMultiThreading;
-		if (g_Config.iInflightFrames == 1) {
-			useMultiThreading = false;
-		}
-		draw_ = Draw::T3DCreateVulkanContext(g_Vulkan, useMultiThreading);
-		SetGPUBackend(GPUBackend::VULKAN);
-		success = draw_->CreatePresets();  // Doesn't fail, we ship the compiler.
-		_assert_msg_(success, "Failed to compile preset shaders");
-		draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER, g_Vulkan->GetBackbufferWidth(), g_Vulkan->GetBackbufferHeight());
+	bool useMultiThreading = g_Config.bRenderMultiThreading;
+	if (g_Config.iInflightFrames == 1) {
+		useMultiThreading = false;
+	}
+	draw_ = Draw::T3DCreateVulkanContext(g_Vulkan, useMultiThreading);
 
-		VulkanRenderManager *renderManager = (VulkanRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
-		renderManager->SetInflightFrames(g_Config.iInflightFrames);
-		success = renderManager->HasBackbuffers();
+	VkPresentModeKHR presentMode = ConfigPresentModeToVulkan(draw_);
+	if (!g_Vulkan->InitSwapchain(presentMode)) {
+		g_Vulkan->DestroySurface();
+		return false;
 	}
 
-	INFO_LOG(Log::G3D, "AndroidVulkanContext::Init completed, %s", success ? "successfully" : "but failed");
-	if (!success) {
+	SetGPUBackend(GPUBackend::VULKAN);
+	bool success = draw_->CreatePresets();  // Doesn't fail, we ship the compiler.
+	_assert_msg_(success, "Failed to compile preset shaders");
+	draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER, g_Vulkan->GetBackbufferWidth(), g_Vulkan->GetBackbufferHeight());
+
+	VulkanRenderManager *renderManager = (VulkanRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
+	renderManager->SetInflightFrames(g_Config.iInflightFrames);
+	if (!renderManager->HasBackbuffers()) {
+		ERROR_LOG(Log::G3D, "VulkanRenderManager has no backbuffers after InitFromRenderThread");
 		g_Vulkan->DestroySwapchain();
 		g_Vulkan->DestroySurface();
-		g_Vulkan->DestroyDevice();
-		g_Vulkan->DestroyInstance();
+		delete draw_;
+		draw_ = nullptr;
+		return false;
 	}
-	return success;
+
+	INFO_LOG(Log::G3D, "AndroidVulkanContext::Init completed successfully");
+	return true;
 }
 
 void AndroidVulkanContext::ShutdownFromRenderThread() {
@@ -143,15 +126,15 @@ void AndroidVulkanContext::Shutdown() {
 
 void AndroidVulkanContext::Resize() {
 	INFO_LOG(Log::G3D, "AndroidVulkanContext::Resize begin (oldsize: %dx%d)", g_Vulkan->GetBackbufferWidth(), g_Vulkan->GetBackbufferHeight());
-
 	draw_->HandleEvent(Draw::Event::LOST_BACKBUFFER, g_Vulkan->GetBackbufferWidth(), g_Vulkan->GetBackbufferHeight());
 	g_Vulkan->DestroySwapchain();
+
+	// TODO: We should only destroy the surface here if the window changed. We can track this inside g_Vulkan.
 	g_Vulkan->DestroySurface();
-
-	g_Vulkan->UpdateFlags(FlagsFromConfig());
-
 	g_Vulkan->ReinitSurface();
-	g_Vulkan->InitSwapchain();
+
+	VkPresentModeKHR presentMode = ConfigPresentModeToVulkan(draw_);
+	g_Vulkan->InitSwapchain(presentMode);
 	draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER, g_Vulkan->GetBackbufferWidth(), g_Vulkan->GetBackbufferHeight());
 	INFO_LOG(Log::G3D, "AndroidVulkanContext::Resize end (final size: %dx%d)", g_Vulkan->GetBackbufferWidth(), g_Vulkan->GetBackbufferHeight());
 }

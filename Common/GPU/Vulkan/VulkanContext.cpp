@@ -5,7 +5,6 @@
 #include <cstring>
 #include <iostream>
 
-#include "Core/Config.h"
 #include "Common/System/System.h"
 #include "Common/System/Display.h"
 #include "Common/Log.h"
@@ -72,6 +71,7 @@ const char *VulkanPresentModeToString(VkPresentModeKHR presentMode) {
 	case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "FIFO_RELAXED";
 	case VK_PRESENT_MODE_SHARED_DEMAND_REFRESH_KHR: return "SHARED_DEMAND_REFRESH_KHR";
 	case VK_PRESENT_MODE_SHARED_CONTINUOUS_REFRESH_KHR: return "SHARED_CONTINUOUS_REFRESH_KHR";
+	case VK_PRESENT_MODE_FIFO_LATEST_READY_KHR: return "FIFO_LATEST_READY";
 	default: return "UNKNOWN";
 	}
 }
@@ -100,6 +100,19 @@ VkResult VulkanContext::CreateInstance(const CreateInfo &info) {
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
 
+	if (info.flags & VulkanInitFlags::DISABLE_IMPLICIT_LAYERS) {
+		// https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderDebugging.md
+#if PPSSPP_PLATFORM(WINDOWS)
+#if !PPSSPP_PLATFORM(UWP)
+		// Windows uses _putenv_s
+		_putenv_s("VK_LOADER_LAYERS_DISABLE", "~implicit~");
+#endif
+#else
+		// POSIX: use setenv
+		setenv("VK_LOADER_LAYERS_DISABLE", "~implicit~", 1);  // overwrite = 1
+#endif
+	}
+
 	// Check which Vulkan version we should request.
 	// Our code is fine with any version from 1.0 to 1.2, we don't know about higher versions.
 	vulkanInstanceApiVersion_ = VK_API_VERSION_1_0;
@@ -124,7 +137,7 @@ VkResult VulkanContext::CreateInstance(const CreateInfo &info) {
 		init_error_ = "Vulkan not loaded - no surface extension";
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
-	flags_ = info.flags;
+	createInfo_ = info;
 
 	// List extensions to try to enable.
 	instance_extensions_enabled_.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
@@ -158,7 +171,7 @@ VkResult VulkanContext::CreateInstance(const CreateInfo &info) {
 #endif
 #endif
 
-	if ((flags_ & VULKAN_FLAG_VALIDATE) && g_Config.sCustomDriver.empty()) {
+	if ((createInfo_.flags & VulkanInitFlags::VALIDATE) && info.customDriver.empty()) {
 		if (IsInstanceExtensionAvailable(VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
 			// Enable the validation layers
 			for (size_t i = 0; i < ARRAY_SIZE(validationLayers); i++) {
@@ -170,9 +183,12 @@ VkResult VulkanContext::CreateInstance(const CreateInfo &info) {
 			INFO_LOG(Log::G3D, "Vulkan debug_utils validation enabled.");
 		} else {
 			ERROR_LOG(Log::G3D, "Validation layer extension not available - not enabling Vulkan validation.");
-			flags_ &= ~VULKAN_FLAG_VALIDATE;
+			createInfo_.flags &= ~VulkanInitFlags::VALIDATE;
 		}
 	}
+
+	// Uncomment to test GPU backend fallback
+	// abort();
 
 	if (EnableInstanceExtension(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME, VK_API_VERSION_1_1)) {
 		extensionsLookup_.KHR_get_physical_device_properties2 = true;
@@ -181,11 +197,6 @@ VkResult VulkanContext::CreateInstance(const CreateInfo &info) {
 	if (EnableInstanceExtension(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME, 0)) {
 		extensionsLookup_.EXT_swapchain_colorspace = true;
 	}
-#if PPSSPP_PLATFORM(IOS_APP_STORE)
-	if (EnableInstanceExtension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME, 0)) {
-
-	}
-#endif
 
 	// Validate that all the instance extensions we ask for are actually available.
 	for (auto ext : instance_extensions_enabled_) {
@@ -374,12 +385,15 @@ void VulkanContext::DestroySwapchain() {
 		vkDestroySwapchainKHR(device_, swapchain_, nullptr);
 		swapchain_ = VK_NULL_HANDLE;
 	}
+	swapchainInited_ = false;
 }
 
 void VulkanContext::DestroySurface() {
 	if (surface_ != VK_NULL_HANDLE) {
 		vkDestroySurfaceKHR(instance_, surface_, nullptr);
 		surface_ = VK_NULL_HANDLE;
+
+		// NOTE: We do not reset winSysData1 and 2, it's useful for debugging to compare them.
 	}
 }
 
@@ -509,15 +523,15 @@ bool VulkanContext::CheckLayers(const std::vector<LayerProperties> &layer_props,
 	return true;
 }
 
-int VulkanContext::GetPhysicalDeviceByName(const std::string &name) {
+int VulkanContext::GetPhysicalDeviceByName(std::string_view name) const {
 	for (size_t i = 0; i < physical_devices_.size(); i++) {
-		if (physicalDeviceProperties_[i].properties.deviceName == name)
+		if (equals(physicalDeviceProperties_[i].properties.deviceName, name))
 			return (int)i;
 	}
 	return -1;
 }
 
-int VulkanContext::GetBestPhysicalDevice() {
+int VulkanContext::GetBestPhysicalDevice() const {
 	// Rules: Prefer discrete over embedded.
 	// Prefer nVidia over Intel.
 
@@ -629,12 +643,12 @@ VkResult VulkanContext::CreateDevice(int physical_device) {
 	// This is as good a place as any to do this. Though, we don't use this much anymore after we added
 	// support for VMA.
 	vkGetPhysicalDeviceMemoryProperties(physical_devices_[physical_device_], &memory_properties_);
-	INFO_LOG(Log::G3D, "Memory Types (%d):", memory_properties_.memoryTypeCount);
+	DEBUG_LOG(Log::G3D, "Memory Types (%d):", memory_properties_.memoryTypeCount);
 	for (int i = 0; i < (int)memory_properties_.memoryTypeCount; i++) {
 		// Don't bother printing dummy memory types.
 		if (!memory_properties_.memoryTypes[i].propertyFlags)
 			continue;
-		INFO_LOG(Log::G3D, "  %d: Heap %d; Flags: %s%s%s%s  ", i, memory_properties_.memoryTypes[i].heapIndex,
+		DEBUG_LOG(Log::G3D, "  %d: Heap %d; Flags: %s%s%s%s  ", i, memory_properties_.memoryTypes[i].heapIndex,
 			(memory_properties_.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "DEVICE_LOCAL " : "",
 			(memory_properties_.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ? "HOST_VISIBLE " : "",
 			(memory_properties_.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? "HOST_CACHED " : "",
@@ -694,6 +708,12 @@ VkResult VulkanContext::CreateDevice(int physical_device) {
 
 	extensionsLookup_.EXT_provoking_vertex = EnableDeviceExtension(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME, 0);
 
+	extensionsLookup_.KHR_present_mode_fifo_latest_ready = EnableDeviceExtension(VK_KHR_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME, 0);
+	if (!extensionsLookup_.KHR_present_mode_fifo_latest_ready) {
+		// Enable the EXT extension instead if available, it's equivalent (was promoted).
+		extensionsLookup_.KHR_present_mode_fifo_latest_ready = EnableDeviceExtension(VK_EXT_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME, 0);
+	}
+
 	// Optional features
 	if (extensionsLookup_.KHR_get_physical_device_properties2 && vkGetPhysicalDeviceFeatures2) {
 		VkPhysicalDeviceFeatures2 features2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR };
@@ -702,6 +722,7 @@ VkResult VulkanContext::CreateDevice(int physical_device) {
 		VkPhysicalDevicePresentWaitFeaturesKHR presentWaitFeatures{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR };
 		VkPhysicalDevicePresentIdFeaturesKHR presentIdFeatures{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR };
 		VkPhysicalDeviceProvokingVertexFeaturesEXT provokingVertexFeatures{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT };
+		VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR presentModeFifoProps{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_MODE_FIFO_LATEST_READY_FEATURES_KHR};
 
 		ChainStruct(features2, &multiViewFeatures);
 		if (extensionsLookup_.KHR_present_wait) {
@@ -712,6 +733,9 @@ VkResult VulkanContext::CreateDevice(int physical_device) {
 		}
 		if (extensionsLookup_.EXT_provoking_vertex) {
 			ChainStruct(features2, &provokingVertexFeatures);
+		}
+		if (extensionsLookup_.KHR_present_mode_fifo_latest_ready) {
+			ChainStruct(features2, &presentModeFifoProps);
 		}
 		vkGetPhysicalDeviceFeatures2(physical_devices_[physical_device_], &features2);
 		deviceFeatures_.available.standard = features2.features;
@@ -724,6 +748,9 @@ VkResult VulkanContext::CreateDevice(int physical_device) {
 		}
 		if (extensionsLookup_.EXT_provoking_vertex) {
 			deviceFeatures_.available.provokingVertex = provokingVertexFeatures;
+		}
+		if (extensionsLookup_.KHR_present_mode_fifo_latest_ready) {
+			deviceFeatures_.available.presentModeFifoProps = presentModeFifoProps;
 		}
 	} else {
 		vkGetPhysicalDeviceFeatures(physical_devices_[physical_device_], &deviceFeatures_.available.standard);
@@ -764,6 +791,10 @@ VkResult VulkanContext::CreateDevice(int physical_device) {
 	if (extensionsLookup_.EXT_provoking_vertex) {
 		deviceFeatures_.enabled.provokingVertex.provokingVertexLast = true;
 	}
+	deviceFeatures_.enabled.presentModeFifoProps = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_MODE_FIFO_LATEST_READY_FEATURES_KHR};
+	if (extensionsLookup_.KHR_present_mode_fifo_latest_ready) {
+		deviceFeatures_.enabled.presentModeFifoProps.presentModeFifoLatestReady = deviceFeatures_.available.presentModeFifoProps.presentModeFifoLatestReady;
+	}
 
 	// deviceFeatures_.enabled.multiview.multiviewGeometryShader = deviceFeatures_.available.multiview.multiviewGeometryShader;
 
@@ -789,6 +820,9 @@ VkResult VulkanContext::CreateDevice(int physical_device) {
 		}
 		if (extensionsLookup_.EXT_provoking_vertex) {
 			ChainStruct(features2, &deviceFeatures_.enabled.provokingVertex);
+		}
+		if (extensionsLookup_.KHR_present_mode_fifo_latest_ready) {
+			ChainStruct(features2, &deviceFeatures_.enabled.presentModeFifoProps);
 		}
 	} else {
 		device_info.pEnabledFeatures = &deviceFeatures_.enabled.standard;
@@ -892,13 +926,12 @@ bool VulkanContext::CreateInstanceAndDevice(const CreateInfo &info) {
 		return false;
 	}
 
-	INFO_LOG(Log::G3D, "Creating Vulkan device (flags: %08x)", info.flags);
+	INFO_LOG(Log::G3D, "Creating Vulkan device (flags: %08x)", (u32)info.flags);
 	if (CreateDevice(physicalDevice) != VK_SUCCESS) {
 		INFO_LOG(Log::G3D, "Failed to create vulkan device: %s", InitError().c_str());
 		DestroyInstance();
 		return false;
 	}
-
 	return true;
 }
 
@@ -912,6 +945,12 @@ void VulkanContext::SetDebugNameImpl(uint64_t handle, VkObjectType type, const c
 
 VkResult VulkanContext::InitSurface(WindowSystem winsys, void *data1, void *data2) {
 	winsys_ = winsys;
+	if (winsysData1_ != data1 && winsysData1_ != 0) {
+		WARN_LOG(Log::G3D, "winsysData1 changed from %p to %p", winsysData1_, data1);
+	}
+	if (winsysData2_ != data2 && winsysData2_ != 0) {
+		WARN_LOG(Log::G3D, "winsysData2 changed from %p to %p", winsysData2_, data2);
+	}
 	winsysData1_ = data1;
 	winsysData2_ = data2;
 	return ReinitSurface();
@@ -1203,6 +1242,15 @@ VkResult VulkanContext::ReinitSurface() {
 		frame_[i].profiler.Init(this);
 	}
 
+	// Query presentation modes. We need to know which ones are available for InitSwapchain().
+	availablePresentModes_.clear();
+	uint32_t presentModeCount;
+	VkResult res = vkGetPhysicalDeviceSurfacePresentModesKHR(physical_devices_[physical_device_], surface_, &presentModeCount, nullptr);
+	availablePresentModes_.resize(presentModeCount);
+	_dbg_assert_(res == VK_SUCCESS);
+	res = vkGetPhysicalDeviceSurfacePresentModesKHR(physical_devices_[physical_device_], surface_, &presentModeCount, availablePresentModes_.data());
+	_dbg_assert_(res == VK_SUCCESS);
+
 	return VK_SUCCESS;
 }
 
@@ -1285,7 +1333,7 @@ bool VulkanContext::ChooseQueue() {
 			// Okay, take the first one then.
 			swapchainFormat_ = surfFormats_[0].format;
 		}
-		INFO_LOG(Log::G3D, "swapchain_format: %d (/%d)", swapchainFormat_, formatCount);
+		INFO_LOG(Log::G3D, "swapchain_format: %s (%d) (/%d)", VulkanFormatToString(swapchainFormat_), (int)swapchainFormat_, formatCount);
 	}
 
 	vkGetDeviceQueue(device_, graphics_queue_family_index_, 0, &gfx_queue_);
@@ -1314,11 +1362,15 @@ static std::string surface_transforms_to_string(VkSurfaceTransformFlagsKHR trans
 	return str;
 }
 
-bool VulkanContext::InitSwapchain() {
-	_assert_(physical_device_ >= 0 && physical_device_ < physical_devices_.size());
+bool VulkanContext::InitSwapchain(VkPresentModeKHR desiredPresentMode) {
+	_assert_(physical_device_ >= 0 && physical_device_ < (int)physical_devices_.size());
 	if (!surface_) {
 		ERROR_LOG(Log::G3D, "VK: No surface, can't create swapchain");
 		return false;
+	}
+
+	if (swapchain_) {
+		INFO_LOG(Log::G3D, "Swapchain already exists, recreating...");
 	}
 
 	VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_devices_[physical_device_], surface_, &surfCapabilities_);
@@ -1327,16 +1379,16 @@ bool VulkanContext::InitSwapchain() {
 		ERROR_LOG(Log::G3D, "VK: Surface lost in InitSwapchain");
 		return false;
 	}
-	_dbg_assert_(res == VK_SUCCESS);
-	uint32_t presentModeCount;
-	res = vkGetPhysicalDeviceSurfacePresentModesKHR(physical_devices_[physical_device_], surface_, &presentModeCount, nullptr);
-	_dbg_assert_(res == VK_SUCCESS);
-	VkPresentModeKHR *presentModes = new VkPresentModeKHR[presentModeCount];
-	_dbg_assert_(presentModes);
-	res = vkGetPhysicalDeviceSurfacePresentModesKHR(physical_devices_[physical_device_], surface_, &presentModeCount, presentModes);
-	_dbg_assert_(res == VK_SUCCESS);
 
-	VkExtent2D currentExtent { surfCapabilities_.currentExtent };
+	if (surfCapabilities_.maxImageExtent.width == 0 || surfCapabilities_.maxImageExtent.height == 0) {
+		WARN_LOG(Log::G3D, "Max image extent is 0 - app is probably minimized. Faking having a swapchain.");
+		swapChainExtent_ = {};  // makes it so querying width/height returns 0.
+		// We pretend to have a swapchain initialized - though we won't actually render to it.
+		swapchainInited_ = true;
+		return true;
+	}
+
+	VkExtent2D currentExtent{ surfCapabilities_.currentExtent };
 	// https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkSurfaceCapabilitiesKHR.html
 	// currentExtent is the current width and height of the surface, or the special value (0xFFFFFFFF, 0xFFFFFFFF) indicating that the surface size will be determined by the extent of a swapchain targeting the surface.
 	if (currentExtent.width == 0xFFFFFFFFu || currentExtent.height == 0xFFFFFFFFu
@@ -1344,7 +1396,7 @@ bool VulkanContext::InitSwapchain() {
 		|| currentExtent.width == 0 || currentExtent.height == 0
 #endif
 		) {
-		_dbg_assert_((bool)cbGetDrawSize_)
+		_dbg_assert_((bool)cbGetDrawSize_);
 		if (cbGetDrawSize_) {
 			currentExtent = cbGetDrawSize_();
 		}
@@ -1359,49 +1411,40 @@ bool VulkanContext::InitSwapchain() {
 		surfCapabilities_.maxImageExtent.width, surfCapabilities_.maxImageExtent.height,
 		swapChainExtent_.width, swapChainExtent_.height);
 
-	availablePresentModes_.clear();
 	// TODO: Find a better way to specify the prioritized present mode while being able
 	// to fall back in a sensible way.
 	VkPresentModeKHR swapchainPresentMode = VK_PRESENT_MODE_MAX_ENUM_KHR;
-	std::string modes = "";
-	for (size_t i = 0; i < presentModeCount; i++) {
-		modes += VulkanPresentModeToString(presentModes[i]);
-		if (i != presentModeCount - 1) {
-			modes += ", ";
-		}
-		availablePresentModes_.push_back(presentModes[i]);
-	}
-
-	INFO_LOG(Log::G3D, "Supported present modes: %s", modes.c_str());
-	for (size_t i = 0; i < presentModeCount; i++) {
-		bool match = false;
-		match = match || ((flags_ & VULKAN_FLAG_PRESENT_MAILBOX) && presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR);
-		match = match || ((flags_ & VULKAN_FLAG_PRESENT_IMMEDIATE) && presentModes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR);
-		match = match || ((flags_ & VULKAN_FLAG_PRESENT_FIFO_RELAXED) && presentModes[i] == VK_PRESENT_MODE_FIFO_RELAXED_KHR);
-		match = match || ((flags_ & VULKAN_FLAG_PRESENT_FIFO) && presentModes[i] == VK_PRESENT_MODE_FIFO_KHR);
-
+	// Kind of silly logic now, but at least it performs a final sanity check of the chosen value.
+	for (size_t i = 0; i < availablePresentModes_.size(); i++) {
+		bool match = availablePresentModes_[i] == desiredPresentMode;
 		// Default to the first present mode from the list.
 		if (match || swapchainPresentMode == VK_PRESENT_MODE_MAX_ENUM_KHR) {
-			swapchainPresentMode = presentModes[i];
+			swapchainPresentMode = availablePresentModes_[i];
 		}
 		if (match) {
 			break;
 		}
 	}
-	delete[] presentModes;
 	// Determine the number of VkImage's to use in the swap chain (we desire to
 	// own only 1 image at a time, besides the images being displayed and
 	// queued for display):
 	uint32_t desiredNumberOfSwapChainImages = surfCapabilities_.minImageCount + 1;
 	if ((surfCapabilities_.maxImageCount > 0) &&
-		(desiredNumberOfSwapChainImages > surfCapabilities_.maxImageCount))
-	{
+		(desiredNumberOfSwapChainImages > surfCapabilities_.maxImageCount)) {
 		// Application must settle for fewer images than desired:
 		desiredNumberOfSwapChainImages = surfCapabilities_.maxImageCount;
 	}
 
-	INFO_LOG(Log::G3D, "Chosen present mode: %d (%s). numSwapChainImages: %d/%d",
-		swapchainPresentMode, VulkanPresentModeToString(swapchainPresentMode),
+	std::string modes = "";
+	for (size_t i = 0; i < availablePresentModes_.size(); i++) {
+		modes += VulkanPresentModeToString(availablePresentModes_[i]);
+		if (i != availablePresentModes_.size() - 1) {
+			modes += ", ";
+		}
+	}
+
+	INFO_LOG(Log::G3D, "Supported present modes: %s. Chosen present mode: %d (%s). numSwapChainImages: %d (max: %d)",
+		modes.c_str(), swapchainPresentMode, VulkanPresentModeToString(swapchainPresentMode),
 		desiredNumberOfSwapChainImages, surfCapabilities_.maxImageCount);
 
 	// We mostly follow the practices from
@@ -1446,8 +1489,11 @@ bool VulkanContext::InitSwapchain() {
 		preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	}
 
-	std::string preTransformStr = surface_transforms_to_string(preTransform);
-	INFO_LOG(Log::G3D, "Transform supported: %s current: %s chosen: %s", supportedTransforms.c_str(), currentTransform.c_str(), preTransformStr.c_str());
+	// Only log transforms if relevant.
+	if (surfCapabilities_.supportedTransforms != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
+		std::string preTransformStr = surface_transforms_to_string(preTransform);
+		INFO_LOG(Log::G3D, "Transform supported: %s current: %s chosen: %s", supportedTransforms.c_str(), currentTransform.c_str(), preTransformStr.c_str());
+	}
 
 	if (physicalDeviceProperties_[physical_device_].properties.vendorID == VULKAN_VENDOR_IMGTEC) {
 		u32 driverVersion = physicalDeviceProperties_[physical_device_].properties.driverVersion;
@@ -1467,6 +1513,8 @@ bool VulkanContext::InitSwapchain() {
 		}
 	}
 
+	VkSwapchainKHR oldSwapchain = swapchain_;
+
 	VkSwapchainCreateInfoKHR swap_chain_info{ VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
 	swap_chain_info.surface = surface_;
 	swap_chain_info.minImageCount = desiredNumberOfSwapChainImages;
@@ -1477,7 +1525,7 @@ bool VulkanContext::InitSwapchain() {
 	swap_chain_info.preTransform = preTransform;
 	swap_chain_info.imageArrayLayers = 1;
 	swap_chain_info.presentMode = swapchainPresentMode;
-	swap_chain_info.oldSwapchain = VK_NULL_HANDLE;
+	swap_chain_info.oldSwapchain = swapchain_;
 	swap_chain_info.clipped = true;
 	swap_chain_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
@@ -1485,7 +1533,6 @@ bool VulkanContext::InitSwapchain() {
 
 	// We don't support screenshots on Android if TRANSFER_SRC usage flag is not supported.
 	if (surfCapabilities_.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) {
-		INFO_LOG(Log::G3D, "Swapchain supports TRANSFER_SRC");
 		swap_chain_info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 	}
 
@@ -1502,10 +1549,16 @@ bool VulkanContext::InitSwapchain() {
 
 	res = vkCreateSwapchainKHR(device_, &swap_chain_info, NULL, &swapchain_);
 	if (res != VK_SUCCESS) {
-		ERROR_LOG(Log::G3D, "vkCreateSwapchainKHR failed!");
+		ERROR_LOG(Log::G3D, "vkCreateSwapchainKHR failed! %s", VulkanResultToString(res));
 		return false;
 	}
-	INFO_LOG(Log::G3D, "Created swapchain: %dx%d", swap_chain_info.imageExtent.width, swap_chain_info.imageExtent.height);
+	INFO_LOG(Log::G3D, "Created swapchain: %dx%d %s", swap_chain_info.imageExtent.width, swap_chain_info.imageExtent.height, (surfCapabilities_.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ? "(TRANSFER_SRC_BIT supported)" : "");
+	swapchainInited_ = true;
+
+	if (oldSwapchain != VK_NULL_HANDLE) {
+		vkDestroySwapchainKHR(device_, oldSwapchain, nullptr);
+		INFO_LOG(Log::G3D, "Destroyed old swapchain.");
+	}
 	return true;
 }
 

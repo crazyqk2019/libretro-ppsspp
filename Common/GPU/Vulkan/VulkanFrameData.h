@@ -8,9 +8,17 @@
 #include "Common/GPU/Vulkan/VulkanContext.h"
 #include "Common/Data/Collections/Hashmaps.h"
 
+#if PPSSPP_PLATFORM(IOS)
+// iOS doesn't support a large number of timestamp queries natively.
+// We don't want MoltenVK to fall back to emulation.
+enum {
+	MAX_TIMESTAMP_QUERIES = 32,
+};
+#else
 enum {
 	MAX_TIMESTAMP_QUERIES = 128,
 };
+#endif
 
 enum class VKRRunType {
 	SUBMIT,
@@ -52,11 +60,21 @@ struct CachedReadback {
 	void Destroy(VulkanContext *vulkan);
 };
 
+// Swap chain management
+struct SwapchainImageData {
+	VkImage image;
+	VkImageView view;
+	VkSemaphore renderingCompleteSemaphore = VK_NULL_HANDLE;
+};
+
 struct FrameDataShared {
 	// For synchronous readbacks.
 	VkFence readbackFence = VK_NULL_HANDLE;
 	bool useMultiThreading = false;
 	bool measurePresentTime = false;
+
+	std::vector<SwapchainImageData> swapchainImages_;
+	uint32_t swapchainImageCount_ = 0;
 
 	void Init(VulkanContext *vulkan, bool useMultiThreading, bool measurePresentTime);
 	void Destroy(VulkanContext *vulkan);
@@ -78,7 +96,6 @@ struct FrameData {
 
 	VkFence fence = VK_NULL_HANDLE;
 	VkSemaphore acquireSemaphore = VK_NULL_HANDLE;
-	VkSemaphore renderingCompleteSemaphore = VK_NULL_HANDLE;
 
 	// These are on different threads so need separate pools.
 	VkCommandPool cmdPoolInit = VK_NULL_HANDLE;  // Written to from main thread

@@ -6,6 +6,7 @@
 #include <functional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <mutex>
 #include <queue>
 #include <condition_variable>
@@ -83,6 +84,7 @@ private:
 
 class GLRShader {
 public:
+	explicit GLRShader(std::string_view _desc) : desc(_desc) {}
 	~GLRShader() {
 		if (shader) {
 			glDeleteShader(shader);
@@ -199,7 +201,6 @@ enum class GLRRunType {
 	SUBMIT,
 	PRESENT,
 	SYNC,
-	EXIT,
 };
 
 class GLRenderManager;
@@ -237,7 +238,7 @@ public:
 
 	void ThreadStart(Draw::DrawContext *draw);
 	void ThreadEnd();
-	bool ThreadFrame();  // Returns true if it did anything. False means the queue was empty.
+	bool ThreadFrame(bool waitIfEmpty);  // Returns true if it did anything. False means the queue was empty.
 
 	void SetErrorCallback(ErrorCallbackFn callback, void *userdata) {
 		queueRunner_.SetErrorCallback(callback, userdata);
@@ -276,11 +277,10 @@ public:
 		return step.create_buffer.buffer;
 	}
 
-	GLRShader *CreateShader(GLuint stage, const std::string &code, const std::string &desc) {
+	GLRShader *CreateShader(GLuint stage, const std::string &code, std::string_view desc) {
 		GLRInitStep &step = initSteps_.push_uninitialized();
 		step.stepType = GLRInitStepType::CREATE_SHADER;
-		step.create_shader.shader = new GLRShader();
-		step.create_shader.shader->desc = desc;
+		step.create_shader.shader = new GLRShader(desc);
 		step.create_shader.stage = stage;
 		step.create_shader.code = new char[code.size() + 1];
 		memcpy(step.create_shader.code, code.data(), code.size() + 1);
@@ -825,7 +825,6 @@ public:
 	}
 
 	void StartThread();  // Currently only used on iOS, since we fully recreate the context on Android
-	void StopThread();
 
 	bool SawOutOfMemory() {
 		return queueRunner_.SawOutOfMemory();
@@ -884,8 +883,6 @@ private:
 	std::mutex syncMutex_;
 	std::condition_variable syncCondVar_;
 
-	bool firstFrame_ = true;
-	bool vrRenderStarted_ = false;
 	bool syncDone_ = false;
 
 	GLDeleter deleter_;

@@ -28,6 +28,7 @@
 #include "Core/Reporting.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
+#include "Core/HLE/ErrorCodes.h"
 #include "Core/MIPS/MIPS.h"
 
 #include "Core/Debugger/MemBlockInfo.h"
@@ -923,7 +924,7 @@ static u32 sysclib_strncpy(u32 dest, u32 src, u32 size) {
 
 	// This is just regular strncpy, but being explicit to avoid warnings/safety fixes on missing null.
 	u32 i = 0;
-	u32 srcSize = Memory::ValidSize(src, size);
+	u32 srcSize = Memory::ClampValidSizeAt(src, size);
 	const u8 *srcp = Memory::GetPointerUnchecked(src);
 	u8 *destp = Memory::GetPointerWriteUnchecked(dest);
 	for (i = 0; i < srcSize; ++i) {
@@ -933,7 +934,7 @@ static u32 sysclib_strncpy(u32 dest, u32 src, u32 size) {
 		*destp++ = c;
 	}
 
-	u32 destSize = Memory::ValidSize(dest, size);
+	u32 destSize = Memory::ClampValidSizeAt(dest, size);
 	for (; i < destSize; ++i) {
 		*destp++ = 0;
 	}
@@ -1004,12 +1005,12 @@ const HLEFunction SysclibForKernel[] =
 
 void Register_Kernel_Library()
 {
-	RegisterModule("Kernel_Library", ARRAY_SIZE(Kernel_Library), Kernel_Library);
+	RegisterHLEModule("Kernel_Library", ARRAY_SIZE(Kernel_Library), Kernel_Library);
 }
 
 void Register_SysclibForKernel()
 {
-	RegisterModule("SysclibForKernel", ARRAY_SIZE(SysclibForKernel), SysclibForKernel);
+	RegisterHLEModule("SysclibForKernel", ARRAY_SIZE(SysclibForKernel), SysclibForKernel);
 }
 
 const HLEFunction InterruptManager[] =
@@ -1028,7 +1029,7 @@ const HLEFunction InterruptManager[] =
 
 void Register_InterruptManager()
 {
-	RegisterModule("InterruptManager", ARRAY_SIZE(InterruptManager), InterruptManager);
+	RegisterHLEModule("InterruptManager", ARRAY_SIZE(InterruptManager), InterruptManager);
 }
 
 
@@ -1056,5 +1057,5 @@ const HLEFunction InterruptManagerForKernel[] =
 
 void Register_InterruptManagerForKernel()
 {
-	RegisterModule("InterruptManagerForKernel", ARRAY_SIZE(InterruptManagerForKernel), InterruptManagerForKernel);
+	RegisterHLEModule("InterruptManagerForKernel", ARRAY_SIZE(InterruptManagerForKernel), InterruptManagerForKernel);
 }

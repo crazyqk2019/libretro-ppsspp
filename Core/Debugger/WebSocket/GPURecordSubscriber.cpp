@@ -38,7 +38,7 @@ protected:
 
 DebuggerSubscriber *WebSocketGPURecordInit(DebuggerEventHandlerMap &map) {
 	auto p = new WebSocketGPURecordState();
-	map["gpu.record.dump"] = std::bind(&WebSocketGPURecordState::Dump, p, std::placeholders::_1);
+	map["gpu.record.dump"] = [p](DebuggerRequest &req) { p->Dump(req); };
 
 	return p;
 }
@@ -58,7 +58,7 @@ WebSocketGPURecordState::~WebSocketGPURecordState() {
 //
 // Note: recording may take a moment.
 void WebSocketGPURecordState::Dump(DebuggerRequest &req) {
-	if (!PSP_IsInited()) {
+	if (PSP_GetBootState() != BootState::Complete) {
 		return req.Fail("CPU not started");
 	}
 

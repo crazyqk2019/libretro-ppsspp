@@ -24,8 +24,11 @@
 // with CISO images.
 
 #include <mutex>
+#include <memory>
 
 #include "Common/CommonTypes.h"
+
+#include "ext/libkirk/kirk_engine.h"
 
 class FileLoader;
 
@@ -43,7 +46,7 @@ public:
 		}
 		return true;
 	}
-	int GetBlockSize() const { return 2048;}  // forced, it cannot be changed by subclasses
+	int GetBlockSize() const { return 2048;}  // forced, it cannot be changed by subclasses. If a subclass uses bigger blocks internally, it must cache and virtualize.
 	virtual u32 GetNumBlocks() const = 0;
 	virtual u64 GetUncompressedSize() const {
 		return (u64)GetNumBlocks() * (u64)GetBlockSize();
@@ -52,9 +55,14 @@ public:
 
 	void NotifyReadError();
 
+	bool IsOK() const { return errorString_.empty(); }
+	const std::string &ErrorString() { return errorString_; }
+
 protected:
 	FileLoader *fileLoader_;
 	bool reportedError_ = false;
+
+	std::string errorString_;
 };
 
 class CISOFileBlockDevice : public BlockDevice {
@@ -78,7 +86,6 @@ private:
 	u32 numFrames = 0;
 	int ver_ = 0;
 };
-
 
 class FileBlockDevice : public BlockDevice {
 public:
@@ -116,7 +123,7 @@ public:
 	bool IsDisc() const override { return false; }
 
 private:
-	// TODO: Doubt this mutex is actually needed.
+	// This is in case two threads hit this same block device, which shouldn't really happen.
 	std::mutex mutex_;
 
 	u32 lbaSize_ = 0;
@@ -133,6 +140,10 @@ private:
 	int currentBlock_ = 0;
 	u8 *blockBuf_ = nullptr;
 	u8 *tempBuf_ = nullptr;
+
+	// Each block device gets its own private kirk. Multiple ones can be in flight
+	// to load metadata.
+	KirkState kirk_{};
 };
 
 struct CHDImpl;
@@ -156,4 +167,4 @@ private:
 	u32 numBlocks = 0;
 };
 
-BlockDevice *constructBlockDevice(FileLoader *fileLoader);
+BlockDevice *ConstructBlockDevice(FileLoader *fileLoader, std::string *errorString);

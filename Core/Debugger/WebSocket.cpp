@@ -99,10 +99,6 @@ static void UpdateConnected(int delta) {
 }
 
 static void WebSocketNotifyLifecycle(CoreLifecycle stage) {
-	// We'll likely already be locked during the reboot.
-	if (PSP_IsRebooting())
-		return;
-
 	switch (stage) {
 	case CoreLifecycle::STARTING:
 	case CoreLifecycle::STOPPING:
@@ -136,7 +132,7 @@ void HandleDebuggerRequest(const http::ServerRequest &request) {
 	if (!ws)
 		return;
 
-	SetCurrentThreadName("Debugger");
+	SetCurrentThreadName("WebSocketDebugger");
 	UpdateConnected(1);
 	SetupDebuggerLock();
 
@@ -148,7 +144,7 @@ void HandleDebuggerRequest(const http::ServerRequest &request) {
 	InputBroadcaster input;
 	SteppingBroadcaster stepping;
 
-	std::unordered_map<std::string, DebuggerEventHandler> eventHandlers;
+	DebuggerEventHandlerMap eventHandlers;
 	std::vector<DebuggerSubscriber *> subscriberData;
 	for (auto init : subscribers) {
 		std::lock_guard<std::mutex> guard(lifecycleLock);
@@ -171,6 +167,8 @@ void HandleDebuggerRequest(const http::ServerRequest &request) {
 			return;
 		}
 
+		DEBUG_LOG(Log::Debugger, "WS: Handling '%s'", event);
+
 		DebuggerRequest req(event, ws, root, &client_info);
 		auto eventFunc = eventHandlers.find(event);
 		if (eventFunc != eventHandlers.end()) {
@@ -184,8 +182,10 @@ void HandleDebuggerRequest(const http::ServerRequest &request) {
 			req.Fail("Bad message: unknown event");
 		}
 	});
+
 	ws->SetBinaryHandler([&](const std::vector<uint8_t> &d) {
-		ws->Send(DebuggerErrorEvent("Bad message", LogLevel::LERROR));
+		ERROR_LOG(Log::Debugger, "Received binary WebSocket frame, not supported");
+		ws->Send(DebuggerErrorEvent("Bad message: binary WebSocket frames are not supported", LogLevel::LERROR));
 	});
 
 	while (ws->Process(highActivity ? 1.0f / 1000.0f : 1.0f / 60.0f)) {

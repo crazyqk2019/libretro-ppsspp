@@ -43,7 +43,7 @@ struct LogMessage {
 };
 
 enum class LogOutput {
-	Stdio = (1 << 0),
+	Stdio = (1 << 0),  // Also android log.
 	DebugString = (1 << 1),
 	RingBuffer = (1 << 2),
 	File = (1 << 3),
@@ -56,9 +56,8 @@ ENUM_CLASS_BITOPS(LogOutput);
 class RingbufferLog {
 public:
 	void Log(const LogMessage &msg);
-
 	int GetCount() const { return count_ < MAX_LOGS ? count_ : MAX_LOGS; }
-	const char *TextAt(int i) const { return messages_[(curMessage_ - i - 1) & (MAX_LOGS - 1)].msg.c_str(); }
+	std::string_view TextAt(int i) const { return messages_[(curMessage_ - i - 1) & (MAX_LOGS - 1)].msg; }
 	LogLevel LevelAt(int i) const { return messages_[(curMessage_ - i - 1) & (MAX_LOGS - 1)].level; }
 
 	void Clear() {
@@ -67,25 +66,17 @@ public:
 	}
 
 private:
-	enum { MAX_LOGS = 128 };
+	enum { MAX_LOGS = 256 };
 	LogMessage messages_[MAX_LOGS];
 	int curMessage_ = 0;
 	int count_ = 0;
-};
-
-struct LogChannel {
-#if defined(_DEBUG)
-	LogLevel level = LogLevel::LDEBUG;
-#else
-	LogLevel level = LogLevel::LDEBUG;
-#endif
-	bool enabled = true;
 };
 
 class Section;
 class ConsoleListener;
 
 typedef void (*LogCallback)(const LogMessage &message, void *userdata);
+extern bool *g_bLogEnabledSetting;
 
 class LogManager {
 public:
@@ -104,6 +95,13 @@ public:
 		temp &= ~output;
 		SetOutputsEnabled(temp);
 	}
+	void EnableOutput(LogOutput output, bool enabled) {
+		if (enabled) {
+			EnableOutput(output);
+		} else {
+			DisableOutput(output);
+		}
+	}
 
 	static u32 GetMaxLevel() { return (u32)MAX_LOGLEVEL;	}
 	static int GetNumChannels() { return (int)Log::NUMBER_OF_LOGS; }
@@ -111,33 +109,26 @@ public:
 	void LogLine(LogLevel level, Log type,
 				 const char *file, int line, const char *fmt, va_list args);
 
-	bool IsEnabled(LogLevel level, Log type) const {
-		const LogChannel &log = log_[(size_t)type];
-		if (level > log.level || !log.enabled)
-			return false;
-		return true;
-	}
-
 	LogChannel *GetLogChannel(Log type) {
-		return &log_[(size_t)type];
+		return &g_log[(size_t)type];
 	}
 
 	void SetLogLevel(Log type, LogLevel level) {
-		log_[(size_t)type].level = level;
+		g_log[(size_t)type].level = level;
 	}
 
 	void SetAllLogLevels(LogLevel level) {
 		for (int i = 0; i < (int)Log::NUMBER_OF_LOGS; ++i) {
-			log_[i].level = level;
+			g_log[i].level = level;
 		}
 	}
 
 	void SetEnabled(Log type, bool enable) {
-		log_[(size_t)type].enabled = enable;
+		g_log[(size_t)type].enabled = enable;
 	}
 
 	LogLevel GetLogLevel(Log type) {
-		return log_[(size_t)type].level;
+		return g_log[(size_t)type].level;
 	}
 
 #if PPSSPP_PLATFORM(WINDOWS)
@@ -146,8 +137,8 @@ public:
 	}
 #endif
 
-	const RingbufferLog *GetRingbuffer() const {
-		return &ringLog_;
+	const RingbufferLog &GetRingbuffer() const {
+		return ringLog_;
 	}
 
 	void Init(bool *enabledSetting, bool headless = false);
@@ -158,12 +149,25 @@ public:
 		externalUserData_ = userdata;
 	}
 
-	void ChangeFileLog(const Path &filename);
+	void SetFileLogPath(const Path &filename);
+	const Path &GetLogFilePath() const { return logFilename_; }
 
 	void SaveConfig(Section *section);
-	void LoadConfig(const Section *section, bool debugDefaults);
+	void LoadConfig(const Section *section);
 
 	static const char *GetLogTypeName(Log type);
+
+	static u32 GetLevelColor(LogLevel level) {
+		switch (level) {
+		case LogLevel::LDEBUG: return 0xE0E0E0;
+		case LogLevel::LWARNING: return 0x50FFFF;
+		case LogLevel::LERROR: return 0x5050FF;
+		case LogLevel::LNOTICE: return 0x30FF30;
+		case LogLevel::LINFO: return 0xFFFF60;
+		case LogLevel::LVERBOSE:
+		default: return 0xC0C0C0;
+		}
+	}
 
 private:
 	// Prevent copies.
@@ -172,7 +176,6 @@ private:
 
 	bool initialized_ = false;
 
-	LogChannel log_[(size_t)Log::NUMBER_OF_LOGS];
 #if PPSSPP_PLATFORM(WINDOWS)
 	ConsoleListener *consoleLog_ = nullptr;
 #endif

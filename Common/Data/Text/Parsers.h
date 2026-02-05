@@ -86,10 +86,22 @@ std::string NiceTimeFormat(int seconds);
 // TODO: We actually also have Buffer, with .Printf(), which is almost as convenient. Should maybe improve that instead?
 class StringWriter {
 public:
-	explicit StringWriter(char *buffer, size_t bufSize) : start_(buffer), p_(buffer), bufSize_(bufSize) {
+	StringWriter(char *buffer, size_t bufSize) : start_(buffer), p_(buffer), bufSize_(bufSize) {
+		buffer[0] = '\0';
+	}
+	template<size_t sz>
+	explicit StringWriter(char (&buffer)[sz]) : start_(buffer), p_(buffer), bufSize_(sz) {
 		buffer[0] = '\0';
 	}
 	StringWriter(const StringWriter &) = delete;
+
+	std::string_view as_view() const {
+		return std::string_view(start_, p_ - start_);
+	}
+
+	size_t size() const {
+		return p_ - start_;
+	}
 
 	// Assumes the input is zero-terminated.
 	// C: Copies a string literal (which always are zero-terminated, the count includes the zero) directly to the stream.
@@ -102,6 +114,12 @@ public:
 		p_ += T - 1;
 		return *this;
 	}
+	// Assumes the input is zero-terminated.
+	// C: Copies a string literal (which always are zero-terminated, the count includes the zero) directly to the stream.
+	StringWriter &B(bool b) {
+		return W(b ? "true" : "false");
+	}
+
 	// W: Writes a string_view to the stream.
 	StringWriter &W(std::string_view text) {
 		const size_t remainder = bufSize_ - (p_ - start_);

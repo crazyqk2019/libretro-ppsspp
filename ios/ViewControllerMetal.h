@@ -2,15 +2,11 @@
 // Used by both Vulkan/MoltenVK and the future Metal backend.
 
 #pragma once
-#include "ViewControllerCommon.h"
 
+#import "ViewControllerCommon.h"
 #import "iCade/iCadeReaderView.h"
-#import "CameraHelper.h"
-#import "LocationHelper.h"
 
-@interface PPSSPPViewControllerMetal : UIViewController<
-    iCadeEventDelegate, LocationHandlerDelegate, CameraFrameDelegate,
-    UIGestureRecognizerDelegate, UIKeyInput, PPSSPPViewController>
+@interface PPSSPPViewControllerMetal : PPSSPPBaseViewController
 @end
 
 /** The Metal-compatibile view. */

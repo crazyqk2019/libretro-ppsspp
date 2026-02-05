@@ -4,7 +4,7 @@
 #include "Common/Data/Text/I18n.h"
 #include "Common/CPUDetect.h"
 #include "Common/StringUtils.h"
-#include "Common/Buffer.h"
+#include "Common/Data/Text/Parsers.h"
 
 #include "Core/MIPS/MIPS.h"
 #include "Core/HW/Display.h"
@@ -97,9 +97,9 @@ static void DrawControlDebug(UIContext *ctx, const ControlMapper &mapper, const 
 
 static void DrawFrameTimes(UIContext *ctx, const Bounds &bounds) {
 	FontID ubuntu24("UBUNTU24");
-	double *sleepHistory;
+	float *sleepHistory;
 	int valid, pos;
-	double *history = __DisplayGetFrameTimes(&valid, &pos, &sleepHistory);
+	float *history = __DisplayGetFrameTimes(&valid, &pos, &sleepHistory);
 	int scale = 7000;
 	int width = 600;
 
@@ -132,14 +132,19 @@ static void DrawFrameTiming(UIContext *ctx, const Bounds &bounds) {
 
 	char statBuf[1024]{};
 
+	Draw::DrawContext *draw = ctx->GetDrawContext();
+
 	ctx->Flush();
 	ctx->BindFontTexture();
 	ctx->Draw()->SetFontScale(0.5f, 0.5f);
 
+	// NOTE: This is not necessarily the same as the actual present mode.
 	snprintf(statBuf, sizeof(statBuf),
-		"Mode (interval): %s (%d)",
-		Draw::PresentModeToString(g_frameTiming.presentMode),
-		g_frameTiming.presentInterval);
+		"Presentation mode: %s Needs skip: %s\n"
+		"Actual presentation mode: %s",
+		Draw::PresentModeToString(g_frameTiming.PresentMode()),
+		g_frameTiming.FastForwardNeedsSkipFlip() ? "true" : "false",
+		Draw::PresentModeToString(draw->GetCurrentPresentMode()));
 
 	ctx->Draw()->DrawTextRect(ubuntu24, statBuf, bounds.x + 10, bounds.y + 50, bounds.w - 20, bounds.h - 30, 0xFFFFFFFF, FLAG_DYNAMIC_ASCII);
 
@@ -295,32 +300,43 @@ void DrawCrashDump(UIContext *ctx, const Path &gamePath) {
 
 	bool checkingISO = false;
 	bool isoOK = false;
-
 	char crcStr[50]{};
-	if (Reporting::HasCRC(gamePath)) {
-		u32 crc = Reporting::RetrieveCRC(gamePath);
-		std::vector<GameDBInfo> dbInfos;
-		if (g_gameDB.GetGameInfos(discID, &dbInfos)) {
-			for (auto &dbInfo : dbInfos) {
-				if (dbInfo.crc == crc) {
-					isoOK = true;
+
+	switch (PSP_CoreParameter().fileType) {
+	case IdentifiedFileType::PSP_ISO:
+	case IdentifiedFileType::PSP_ISO_NP:
+	{
+		if (Reporting::HasCRC(gamePath)) {
+			u32 crc = Reporting::RetrieveCRC(gamePath);
+			std::vector<GameDBInfo> dbInfos;
+			if (discID.size() >= 9 && g_gameDB.GetGameInfos(discID, &dbInfos)) {
+				for (auto &dbInfo : dbInfos) {
+					if (dbInfo.crc == crc) {
+						isoOK = true;
+					}
 				}
 			}
+			snprintf(crcStr, sizeof(crcStr), "CRC: %08x %s\n", crc, isoOK ? "(Known good!)" : "(not identified)");
+		} else {
+			// Queue it for calculation, we want it!
+			// It's OK to call this repeatedly until we have it, which is natural here.
+			Reporting::QueueCRC(gamePath);
+			checkingISO = true;
 		}
-		snprintf(crcStr, sizeof(crcStr), "CRC: %08x %s\n", crc, isoOK ? "(Known good!)" : "(not identified)");
-	} else {
-		// Queue it for calculation, we want it!
-		// It's OK to call this repeatedly until we have it, which is natural here.
-		Reporting::QueueCRC(gamePath);
-		checkingISO = true;
+		break;
 	}
+	default:
+		// Don't show ISO warning for other file types.
+		isoOK = true;
+		break;
+	};
 
 	// TODO: Draw a lot more information. Full register set, and so on.
 
 #ifdef _DEBUG
-	char build[] = "debug";
+	const char * const build = "debug";
 #else
-	char build[] = "release";
+	const char * const build = "release";
 #endif
 
 	std::string sysName = System_GetProperty(SYSPROP_NAME);
@@ -423,7 +439,7 @@ Invalid / Unknown (%d)
 	}
 	if (checkingISO) {
 		tips += "* (waiting for CRC...)\n";
-	} else if (!isoOK) {  // TODO: Should check that it actually is an ISO and not a homebrew
+	} else if (!isoOK) {
 		tips += "* Verify and possibly re-dump your ISO\n  (CRC not recognized)\n";
 	}
 	if (g_paramSFO.GetValueString("DISC_VERSION").empty()) {
@@ -454,33 +470,33 @@ void DrawFPS(UIContext *ctx, const Bounds &bounds) {
 	float vps, fps, actual_fps;
 	__DisplayGetFPS(&vps, &fps, &actual_fps);
 
-	Buffer buffer;
+	char temp[256];
+	StringWriter w(temp);
+
 	if ((g_Config.iShowStatusFlags & ((int)ShowStatusFlags::FPS_COUNTER | (int)ShowStatusFlags::SPEED_COUNTER)) == ((int)ShowStatusFlags::FPS_COUNTER | (int)ShowStatusFlags::SPEED_COUNTER)) {
 		// Both at the same time gets a shorter formulation.
-		buffer.Printf("%0.0f/%0.0f (%0.1f%%)", actual_fps, fps, vps / ((g_Config.iDisplayRefreshRate / 60.0f * 59.94f) / 100.0f));
+		w.F("%0.0f/%0.0f (%0.1f%%)", actual_fps, fps, vps / ((g_Config.iDisplayRefreshRate / 60.0f * 59.94f) / 100.0f));
 	} else {
 		if (g_Config.iShowStatusFlags & (int)ShowStatusFlags::FPS_COUNTER) {
-			buffer.Printf("FPS: %0.1f", actual_fps);
+			w.F("FPS: %0.1f", actual_fps);
 		} else if (g_Config.iShowStatusFlags & (int)ShowStatusFlags::SPEED_COUNTER) {
-			buffer.Printf("Speed: %0.1f%%", vps / (59.94f / 100.0f));
+			w.F("Speed: %0.1f%%", vps / (59.94f / 100.0f));
 		}
 	}
 	if (System_GetPropertyBool(SYSPROP_CAN_READ_BATTERY_PERCENTAGE)) {
 		if (g_Config.iShowStatusFlags & (int)ShowStatusFlags::BATTERY_PERCENT) {
 			const int percentage = System_GetPropertyInt(SYSPROP_BATTERY_PERCENTAGE);
 			// Just plain append battery. Add linebreak?
-			buffer.Printf(" Battery: %d%%", percentage);
+			w.F(" Battery: %d%%", percentage);
 		}
 	}
 
 	ctx->Flush();
 
-	std::string fpsBuf;
-	buffer.TakeAll(&fpsBuf);
 	ctx->BindFontTexture();
 	ctx->Draw()->SetFontScale(0.7f, 0.7f);
-	ctx->Draw()->DrawText(ubuntu24, fpsBuf, bounds.x2() - 8, 20, 0xc0000000, ALIGN_TOPRIGHT | FLAG_DYNAMIC_ASCII);
-	ctx->Draw()->DrawText(ubuntu24, fpsBuf, bounds.x2() - 10, 19, 0xFF3fFF3f, ALIGN_TOPRIGHT | FLAG_DYNAMIC_ASCII);
+	ctx->Draw()->DrawText(ubuntu24, w.as_view(), bounds.x2() - 8, bounds.y + 10, 0xc0000000, ALIGN_TOPRIGHT | FLAG_DYNAMIC_ASCII);
+	ctx->Draw()->DrawText(ubuntu24, w.as_view(), bounds.x2() - 10, bounds.y + 8, 0xFF3fFF3f, ALIGN_TOPRIGHT | FLAG_DYNAMIC_ASCII);
 	ctx->Draw()->SetFontScale(1.0f, 1.0f);
 	ctx->Flush();
 	ctx->RebindTexture();

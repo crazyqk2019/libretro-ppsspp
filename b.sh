@@ -21,6 +21,10 @@ do
 			;;
 		--fat) CMAKE_ARGS="-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64 ${CMAKE_ARGS}"
 			;;
+		--x64) CMAKE_ARGS="-DCMAKE_OSX_ARCHITECTURES=x86_64 ${CMAKE_ARGS}"
+			;;
+		--arm64) CMAKE_ARGS="-DCMAKE_OSX_ARCHITECTURES=arm64 ${CMAKE_ARGS}"
+			;;
 		--no-png) CMAKE_ARGS="-DUSE_SYSTEM_LIBPNG=OFF ${CMAKE_ARGS}"
 			;;
 		--no-sdl2) CMAKE_ARGS="-DUSE_SYSTEM_LIBSDL2=OFF ${CMAKE_ARGS}"
@@ -52,6 +56,9 @@ do
 			;;
 		--headless) echo "Headless mode enabled"
 			CMAKE_ARGS="-DHEADLESS=ON ${CMAKE_ARGS}"
+			;;
+		--atlas-tool) echo "Atlas tool enabled"
+			CMAKE_ARGS="-DATLAS_TOOL=ON ${CMAKE_ARGS}"
 			;;
 		--libretro) echo "Build Libretro core"
 			CMAKE_ARGS="-DLIBRETRO=ON ${CMAKE_ARGS}"
@@ -110,6 +117,8 @@ fi
 
 # Strict errors. Any non-zero return exits this script
 set -e
+
+echo Building with $CORES_COUNT threads
 
 mkdir -p ${BUILD_DIR}
 pushd ${BUILD_DIR}

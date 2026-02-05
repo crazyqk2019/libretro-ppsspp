@@ -65,6 +65,9 @@
     <Filter Include="Other Platforms\Mac">
       <UniqueIdentifier>{e2dd8951-ccb6-4575-996a-69c6832fafbf}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Windows\Input\Hid">
+      <UniqueIdentifier>{55d277d0-1afa-464d-9bde-672334ad73fe}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Debugger\CtrlDisAsmView.cpp">
@@ -94,12 +97,6 @@
     <ClCompile Include="InputBox.cpp">
       <Filter>Windows\UI</Filter>
     </ClCompile>
-    <ClCompile Include="DSoundStream.cpp">
-      <Filter>Windows\System</Filter>
-    </ClCompile>
-    <ClCompile Include="WindowsHost.cpp">
-      <Filter>Windows\System</Filter>
-    </ClCompile>
     <ClCompile Include="Debugger\Debugger_Disasm.cpp">
       <Filter>Windows\Debugger</Filter>
     </ClCompile>
@@ -118,9 +115,6 @@
       <Filter>Other Platforms</Filter>
     </ClCompile>
     <ClCompile Include="..\android\jni\Arm64EmitterTest.cpp">
-      <Filter>Other Platforms</Filter>
-    </ClCompile>
-    <ClCompile Include="..\android\jni\TestRunner.cpp">
       <Filter>Other Platforms</Filter>
     </ClCompile>
     <ClCompile Include="DinputDevice.cpp">
@@ -175,9 +169,6 @@
     <ClCompile Include="MainWindow.cpp">
       <Filter>Windows\UI</Filter>
     </ClCompile>
-    <ClCompile Include="GPU\D3D9Context.cpp">
-      <Filter>Windows\System</Filter>
-    </ClCompile>
     <ClCompile Include="GPU\WindowsGLContext.cpp">
       <Filter>Windows\System</Filter>
     </ClCompile>
@@ -190,7 +181,7 @@
     <ClCompile Include="WindowsAudio.cpp">
       <Filter>Windows\System</Filter>
     </ClCompile>
-    <ClCompile Include="WASAPIStream.cpp">
+    <ClCompile Include="WASAPIContext.cpp">
       <Filter>Windows\System</Filter>
     </ClCompile>
     <ClCompile Include="CaptureDevice.cpp">
@@ -283,6 +274,21 @@
     <ClCompile Include="Debugger\EditSymbolsWindow.cpp">
       <Filter>Windows\Debugger</Filter>
     </ClCompile>
+    <ClCompile Include="HID\DualShock.cpp">
+      <Filter>Windows\Input\Hid</Filter>
+    </ClCompile>
+    <ClCompile Include="HID\SwitchPro.cpp">
+      <Filter>Windows\Input\Hid</Filter>
+    </ClCompile>
+    <ClCompile Include="HID\DualSense.cpp">
+      <Filter>Windows\Input\Hid</Filter>
+    </ClCompile>
+    <ClCompile Include="Hid\HidInputDevice.cpp">
+      <Filter>Windows\Input\Hid</Filter>
+    </ClCompile>
+    <ClCompile Include="Hid\HidCommon.cpp">
+      <Filter>Windows\Input\Hid</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Debugger\CtrlDisAsmView.h">
@@ -312,12 +318,6 @@
     <ClInclude Include="InputBox.h">
       <Filter>Windows\UI</Filter>
     </ClInclude>
-    <ClInclude Include="DSoundStream.h">
-      <Filter>Windows\System</Filter>
-    </ClInclude>
-    <ClInclude Include="WindowsHost.h">
-      <Filter>Windows\System</Filter>
-    </ClInclude>
     <ClInclude Include="main.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="Debugger\Debugger_Disasm.h">
@@ -337,9 +337,6 @@
       <Filter>Other Platforms</Filter>
     </ClInclude>
     <ClInclude Include="..\android\jni\Arm64EmitterTest.h">
-      <Filter>Other Platforms</Filter>
-    </ClInclude>
-    <ClInclude Include="..\android\jni\TestRunner.h">
       <Filter>Other Platforms</Filter>
     </ClInclude>
     <ClInclude Include="DinputDevice.h">
@@ -390,9 +387,6 @@
     <ClInclude Include="MainWindow.h">
       <Filter>Windows\UI</Filter>
     </ClInclude>
-    <ClInclude Include="GPU\D3D9Context.h">
-      <Filter>Windows\System</Filter>
-    </ClInclude>
     <ClInclude Include="GPU\WindowsGLContext.h">
       <Filter>Windows\System</Filter>
     </ClInclude>
@@ -408,7 +402,7 @@
     <ClInclude Include="WindowsAudio.h">
       <Filter>Windows\System</Filter>
     </ClInclude>
-    <ClInclude Include="WASAPIStream.h">
+    <ClInclude Include="WASAPIContext.h">
       <Filter>Windows\System</Filter>
     </ClInclude>
     <ClInclude Include="..\ppsspp_config.h" />
@@ -580,6 +574,27 @@
     <ClInclude Include="..\UI\DarwinFileSystemServices.h">
       <Filter>Other Platforms\iOS</Filter>
     </ClInclude>
+    <ClInclude Include="..\ios\ViewControllerCommon.h">
+      <Filter>Other Platforms\iOS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ios\ViewControllerMetal.h">
+      <Filter>Other Platforms\iOS</Filter>
+    </ClInclude>
+    <ClInclude Include="HID\DualShock.h">
+      <Filter>Windows\Input\Hid</Filter>
+    </ClInclude>
+    <ClInclude Include="HID\SwitchPro.h">
+      <Filter>Windows\Input\Hid</Filter>
+    </ClInclude>
+    <ClInclude Include="HID\DualSense.h">
+      <Filter>Windows\Input\Hid</Filter>
+    </ClInclude>
+    <ClInclude Include="Hid\HidInputDevice.h">
+      <Filter>Windows\Input\Hid</Filter>
+    </ClInclude>
+    <ClInclude Include="Hid\HidCommon.h">
+      <Filter>Windows\Input\Hid</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="icon1.ico">
@@ -592,12 +607,6 @@
       <Filter>Resource Files</Filter>
     </None>
     <None Include="..\README.md" />
-    <None Include="aboutbox.rc">
-      <Filter>Resource Files</Filter>
-    </None>
-    <None Include="version.rc">
-      <Filter>Resource Files</Filter>
-    </None>
     <None Include="..\assets\knownfuncs.ini">
       <Filter>Resource Files</Filter>
     </None>
@@ -623,6 +632,9 @@
       <Filter>Build</Filter>
     </None>
     <None Include="..\b.sh">
+      <Filter>Build</Filter>
+    </None>
+    <None Include="..\build_fontatlas.sh">
       <Filter>Build</Filter>
     </None>
     <None Include="..\build_ppgeatlas.sh">
@@ -818,6 +830,12 @@
     <None Include="..\UI\DarwinFileSystemServices.mm">
       <Filter>Other Platforms\iOS</Filter>
     </None>
+    <None Include="..\ios\ViewControllerMetal.mm">
+      <Filter>Other Platforms\iOS</Filter>
+    </None>
+    <None Include="..\scripts\websocket-test.py">
+      <Filter>Other Platforms</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="ppsspp.rc">
@@ -847,9 +865,6 @@
       <Filter>Build</Filter>
     </Text>
     <Text Include="..\asciifont_atlasscript.txt">
-      <Filter>Build</Filter>
-    </Text>
-    <Text Include="..\ui_atlasscript.txt">
       <Filter>Build</Filter>
     </Text>
     <Text Include="..\SDL\README.TXT">

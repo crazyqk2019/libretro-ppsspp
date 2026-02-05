@@ -107,12 +107,15 @@ void WebSocketCPUResume(DebuggerRequest &req) {
 //  - ticks: number of CPU cycles into emulation.
 void WebSocketCPUStatus(DebuggerRequest &req) {
 	JsonWriter &json = req.Respond();
-	json.writeBool("stepping", PSP_IsInited() && Core_IsStepping() && coreState != CORE_POWERDOWN);
+
+	const bool pspInited = PSP_GetBootState() == BootState::Complete;
+
+	json.writeBool("stepping", pspInited && Core_IsStepping() && coreState != CORE_POWERDOWN);
 	json.writeBool("paused", GetUIState() != UISTATE_INGAME);
 	// Avoid NULL deference.
-	json.writeUint("pc", PSP_IsInited() ? currentMIPS->pc : 0);
+	json.writeUint("pc", pspInited ? currentMIPS->pc : 0);
 	// A double ought to be good enough for a 156 day debug session.
-	json.writeFloat("ticks", PSP_IsInited() ? CoreTiming::GetTicks() : 0);
+	json.writeFloat("ticks", pspInited ? CoreTiming::GetTicks() : 0);
 }
 
 // Retrieve all regs and their values (cpu.getAllRegs)
@@ -273,7 +276,7 @@ void WebSocketCPUGetReg(DebuggerRequest &req) {
 		return;
 
 	int cat, reg;
-	uint32_t val;
+	uint32_t val = 0;
 	switch (ValidateCatReg(req, &cat, &reg)) {
 	case DebuggerRegType::NORMAL:
 		val = cpuDebug->GetRegValue(cat, reg);
@@ -384,7 +387,7 @@ void WebSocketCPUSetReg(DebuggerRequest &req) {
 //  - expression: string containing labels, operators, regs, etc.
 //
 // Response (same event name):
-//  - uintValue: value in register.
+//  - uintValue: the computed value.
 //  - floatValue: string showing float representation.  May be "nan", "inf", or "-inf".
 void WebSocketCPUEvaluate(DebuggerRequest &req) {
 	if (!currentDebugMIPS->isAlive()) {

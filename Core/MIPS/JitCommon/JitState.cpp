@@ -37,12 +37,6 @@ namespace MIPSComp {
 
 		// ARM only
 		downcountInRegister = true;
-		useNEONVFPU = false;  // true
-		if (Disabled(JitDisable::SIMD))
-			useNEONVFPU = false;
-
-		//ARM64
-		useASIMDVFPU = false;  // !Disabled(JitDisable::SIMD);
 
 		// Common
 
@@ -54,13 +48,12 @@ namespace MIPSComp {
 		enableBlocklink = !Disabled(JitDisable::BLOCKLINK);
 #endif
 		immBranches = false;
-		continueBranches = false;
 		continueJumps = false;
 		continueMaxInstructions = 300;
 
 		useStaticAlloc = false;
 		enablePointerify = false;
-#if PPSSPP_ARCH(ARM64) || PPSSPP_ARCH(RISCV64)
+#if PPSSPP_ARCH(ARM64) || PPSSPP_ARCH(RISCV64) || PPSSPP_ARCH(LOONGARCH64)
 		useStaticAlloc = !Disabled(JitDisable::STATIC_ALLOC);
 		// iOS/etc. may disable at runtime if Memory::base is not nicely aligned.
 		enablePointerify = !Disabled(JitDisable::POINTERIFY);

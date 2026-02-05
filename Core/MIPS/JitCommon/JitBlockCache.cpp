@@ -40,27 +40,7 @@
 #include "Core/MIPS/JitCommon/JitBlockCache.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
 
-// #include "JitBase.h"
-
-// Enable define below to enable oprofile integration. For this to work,
-// it requires at least oprofile version 0.9.4, and changing the build
-// system to link the Dolphin executable against libopagent.	Since the
-// dependency is a little inconvenient and this is possibly a slight
-// performance hit, it's not enabled by default, but it's useful for
-// locating performance issues.
-#if defined USE_OPROFILE && USE_OPROFILE
-#include <opagent.h>
-
-op_agent_t agent;
-#endif
-
-#if defined USE_VTUNE
-#include <jitprofiling.h>
-#pragma comment(lib, "libittnotify.lib")
-#pragma comment(lib, "jitprofiling.lib")
-#endif
-
-const u32 INVALID_EXIT = 0xFFFFFFFF;
+constexpr u32 INVALID_EXIT = 0xFFFFFFFF;
 
 static uint64_t HashJitBlock(const JitBlock &b) {
 	PROFILE_THIS_SCOPE("jithash");
@@ -96,9 +76,6 @@ bool JitBlockCache::IsFull() const {
 }
 
 void JitBlockCache::Init() {
-#if defined USE_OPROFILE && USE_OPROFILE
-	agent = op_open_agent();
-#endif
 	blocks_ = new JitBlock[MAX_NUM_BLOCKS];
 	Clear();
 }
@@ -108,22 +85,17 @@ void JitBlockCache::Shutdown() {
 	delete [] blocks_;
 	blocks_ = 0;
 	num_blocks_ = 0;
-#if defined USE_OPROFILE && USE_OPROFILE
-	op_close_agent(agent);
-#endif
-
-#ifdef USE_VTUNE
-	iJIT_NotifyEvent(iJVM_EVENT_TYPE_SHUTDOWN, NULL);
-#endif
 }
 
 // This clears the JIT cache. It's called from JitCache.cpp when the JIT cache
 // is full and when saving and loading states.
 void JitBlockCache::Clear() {
+	// Note: We intentionally clear the block_map_ first to avoid O(N^2) behavior in RemoveBlockMap
 	block_map_.clear();
-	proxyBlockMap_.clear();
-	for (int i = 0; i < num_blocks_; i++)
+	for (int i = 0; i < num_blocks_; i++) {
 		DestroyBlock(i, DestroyType::CLEAR);
+	}
+	proxyBlockMap_.clear();
 	links_to_.clear();
 	num_blocks_ = 0;
 
@@ -234,8 +206,10 @@ void JitBlockCache::RemoveBlockMap(int block_num) {
 		block_map_.erase(it);
 	} else {
 		// It wasn't in there, or it has the wrong key.  Let's search...
+		// TODO: This is O(n), so O(n^2) when called for every block.
 		for (auto it = block_map_.begin(); it != block_map_.end(); ++it) {
 			if (it->second == (u32)block_num) {
+				_dbg_assert_(false);
 				block_map_.erase(it);
 				break;
 			}
@@ -283,27 +257,6 @@ void JitBlockCache::FinalizeBlock(int block_num, bool block_link) {
 	if (blockEnd > PSP_GetUserMemoryBase() + halfUserMemory) {
 		ExpandRange(blockMemRanges_[JITBLOCK_RANGE_RAMTOP], b.originalAddress, blockEnd);
 	}
-
-#if defined USE_OPROFILE && USE_OPROFILE
-	char buf[100];
-	snprintf(buf, sizeof(buf), "EmuCode%x", b.originalAddress);
-	const u8* blockStart = blocks_[block_num].checkedEntry;
-	op_write_native_code(agent, buf, (uint64_t)blockStart, blockStart, b.normalEntry + b.codeSize - b.checkedEntry);
-#endif
-
-#ifdef USE_VTUNE
-	snprintf(b.blockName, sizeof(b.blockName), "EmuCode_0x%08x", b.originalAddress);
-
-	iJIT_Method_Load jmethod = {0};
-	jmethod.method_id = iJIT_GetNewMethodID();
-	jmethod.class_file_name = "";
-	jmethod.source_file_name = __FILE__;
-	jmethod.method_load_address = (void*)blocks_[block_num].checkedEntry;
-	jmethod.method_size = b.normalEntry + b.codeSize - b.checkedEntry;
-	jmethod.line_number_size = 0;
-	jmethod.method_name = b.blockName;
-	iJIT_NotifyEvent(iJVM_EVENT_TYPE_METHOD_LOAD_FINISHED, (void*)&jmethod);
-#endif
 }
 
 bool JitBlockCache::RangeMayHaveEmuHacks(u32 start, u32 end) const {
@@ -658,6 +611,9 @@ int JitBlockCache::GetBlockExitSize() {
 #elif PPSSPP_ARCH(RISCV64)
 	// Will depend on the sequence found to encode the destination address.
 	return 0;
+#elif PPSSPP_ARCH(LOONGARCH64)
+	// Will depend on the sequence found to encode the destination address.
+	return 0;
 #else
 #warning GetBlockExitSize unimplemented
 	return 0;
@@ -711,6 +667,8 @@ JitBlockDebugInfo JitBlockCache::GetBlockDebugInfo(int blockNum) const {
 	debugInfo.targetDisasm = DisassembleX86(block->normalEntry, block->codeSize);
 #elif PPSSPP_ARCH(RISCV64)
 	debugInfo.targetDisasm = DisassembleRV64(block->normalEntry, block->codeSize);
+#elif PPSSPP_ARCH(LOONGARCH64)
+	debugInfo.targetDisasm = DisassembleLA64(block->normalEntry, block->codeSize);
 #endif
 	return debugInfo;
 }

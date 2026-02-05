@@ -184,7 +184,7 @@ VkShaderStageFlagBits StageToVulkan(ShaderStage stage) {
 // invoke Compile again to recreate the shader then link them together.
 class VKShaderModule : public ShaderModule {
 public:
-	VKShaderModule(ShaderStage stage, const std::string &tag) : stage_(stage), tag_(tag) {
+	VKShaderModule(ShaderStage stage, std::string_view tag) : stage_(stage), tag_(tag) {
 		vkstage_ = StageToVulkan(stage);
 	}
 	bool Compile(VulkanContext *vulkan, const uint8_t *data, size_t size);
@@ -271,7 +271,7 @@ public:
 	}
 
 	void SetDynamicUniformData(const void *data, size_t size) {
-		_dbg_assert_(size <= uboSize_);
+		_dbg_assert_((int)size <= uboSize_);
 		memcpy(ubo_, data, size);
 	}
 
@@ -430,7 +430,6 @@ public:
 	PresentMode GetPresentMode() const {
 		switch (vulkan_->GetPresentMode()) {
 		case VK_PRESENT_MODE_FIFO_KHR: return PresentMode::FIFO;
-		case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return PresentMode::FIFO;  // We treat is as FIFO for now (and won't ever enable it anyway...)
 		case VK_PRESENT_MODE_IMMEDIATE_KHR: return PresentMode::IMMEDIATE;
 		case VK_PRESENT_MODE_MAILBOX_KHR: return PresentMode::MAILBOX;
 		default: return PresentMode::FIFO;
@@ -502,7 +501,21 @@ public:
 
 	void BeginFrame(DebugFlags debugFlags) override;
 	void EndFrame() override;
-	void Present(PresentMode presentMode, int vblanks) override;
+
+	void Present(PresentMode presentMode) override;
+	PresentMode GetCurrentPresentMode() const override {
+		switch (vulkan_->GetPresentMode()) {
+		case VK_PRESENT_MODE_IMMEDIATE_KHR:
+			return PresentMode::IMMEDIATE;
+		case VK_PRESENT_MODE_MAILBOX_KHR:
+			return PresentMode::MAILBOX;
+		case VK_PRESENT_MODE_FIFO_KHR:
+		case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
+		case VK_PRESENT_MODE_FIFO_LATEST_READY_KHR:
+		default:
+			return PresentMode::FIFO;
+		}
+	}
 
 	int GetFrameCount() override {
 		return frameCount_;
@@ -802,13 +815,15 @@ bool VKTexture::Create(VkCommandBuffer cmd, VulkanBarrierBatch *postBarriers, Vu
 		usageBits |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 	}
 
-	VkComponentMapping r8AsAlpha[4] = { {VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_R} };
-	VkComponentMapping r8AsColor[4] = { {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE} };
+	static const VkComponentMapping r8AsAlpha[4] = { {VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_R} };
+	static const VkComponentMapping r8AsColor[4] = { {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE} };
+	static const VkComponentMapping r8AsPremulAlpha[4] = { {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R} };
 
-	VkComponentMapping *swizzle = nullptr;
+	const VkComponentMapping *swizzle = nullptr;
 	switch (desc.swizzle) {
 	case TextureSwizzle::R8_AS_ALPHA: swizzle = r8AsAlpha; break;
 	case TextureSwizzle::R8_AS_GRAYSCALE: swizzle = r8AsColor; break;
+	case TextureSwizzle::R8_AS_PREMUL_ALPHA: swizzle = r8AsPremulAlpha; break;
 	case TextureSwizzle::DEFAULT:
 		break;
 	}
@@ -822,7 +837,7 @@ bool VKTexture::Create(VkCommandBuffer cmd, VulkanBarrierBatch *postBarriers, Vu
 	if (desc.initData.size()) {
 		UpdateInternal(cmd, pushBuffer, desc.initData.data(), desc.initDataCallback, (int)desc.initData.size());
 		// Generate the rest of the mips automatically.
-		if (desc.initData.size() < mipLevels_) {
+		if ((int)desc.initData.size() < mipLevels_) {
 			vkTex_->GenerateMips(cmd, (int)desc.initData.size(), false);
 			layout = VK_IMAGE_LAYOUT_GENERAL;
 		}
@@ -893,7 +908,8 @@ VKContext::VKContext(VulkanContext *vulkan, bool useRenderThread)
 	: vulkan_(vulkan), renderManager_(vulkan, useRenderThread, frameTimeHistory_) {
 	shaderLanguageDesc_.Init(GLSL_VULKAN);
 
-	INFO_LOG(Log::G3D, "Determining Vulkan device caps");
+	// Make sure that the surface has been initialized.
+	_dbg_assert_(vulkan->GetAvailablePresentModes().size() > 0);
 
 	caps_.coordConvention = CoordConvention::Vulkan;
 	caps_.setMaxFrameLatencySupported = true;
@@ -902,6 +918,9 @@ VKContext::VKContext(VulkanContext *vulkan, bool useRenderThread)
 	caps_.tesselationShaderSupported = vulkan->GetDeviceFeatures().enabled.standard.tessellationShader != 0;
 	caps_.dualSourceBlend = vulkan->GetDeviceFeatures().enabled.standard.dualSrcBlend != 0;
 	caps_.depthClampSupported = vulkan->GetDeviceFeatures().enabled.standard.depthClamp != 0;
+
+	caps_.maxTextureSize = vulkan->GetPhysicalDeviceProperties().properties.limits.maxImageDimension2D;
+	caps_.maxClipPlanes = vulkan->GetPhysicalDeviceProperties().properties.limits.maxClipDistances;
 
 	// Comment out these two to test geometry shader culling on any geometry shader-supporting hardware.
 	caps_.clipDistanceSupported = vulkan->GetDeviceFeatures().enabled.standard.shaderClipDistance != 0;
@@ -934,6 +953,7 @@ VKContext::VKContext(VulkanContext *vulkan, bool useRenderThread)
 	caps_.presentMaxInterval = 1;
 	caps_.presentInstantModeChange = false;  // TODO: Fix this with some work in VulkanContext
 	caps_.presentModesSupported = (PresentMode)0;
+
 	for (auto mode : vulkan->GetAvailablePresentModes()) {
 		switch (mode) {
 		case VK_PRESENT_MODE_FIFO_KHR: caps_.presentModesSupported |= PresentMode::FIFO; break;
@@ -977,14 +997,6 @@ VKContext::VKContext(VulkanContext *vulkan, bool useRenderThread)
 		// Enable some things that cut down pipeline counts but may have other costs.
 		caps_.verySlowShaderCompiler = true;
 	}
-
-	// Hide D3D9 when we know it likely won't work well.
-#if PPSSPP_PLATFORM(WINDOWS)
-	caps_.supportsD3D9 = true;
-	if (!strcmp(deviceProps.deviceName, "Intel(R) Iris(R) Xe Graphics")) {
-		caps_.supportsD3D9 = false;
-	}
-#endif
 
 	// VkSampleCountFlagBits is arranged correctly for our purposes.
 	// Only support MSAA levels that have support for all three of color, depth, stencil.
@@ -1043,6 +1055,10 @@ VKContext::VKContext(VulkanContext *vulkan, bool useRenderThread)
 		// This started in driver 31 or 32, fixed in 40 - let's add a check once confirmed.
 		if (majorVersion >= 32) {
 			bugs_.Infest(Bugs::MALI_CONSTANT_LOAD_BUG);  // See issue #15661
+		}
+
+		if (deviceProps.driverVersion == 0xaa9c4b29) {
+			bugs_.Infest(Bugs::EMPTY_RENDERPASS_BROKEN_MALI);
 		}
 
 		// Older ARM devices have very slow geometry shaders, not worth using.  At least before 15.
@@ -1146,10 +1162,7 @@ void VKContext::EndFrame() {
 	Invalidate(InvalidationFlags::CACHED_RENDER_STATE);
 }
 
-void VKContext::Present(PresentMode presentMode, int vblanks) {
-	if (presentMode == PresentMode::FIFO) {
-		_dbg_assert_(vblanks == 0 || vblanks == 1);
-	}
+void VKContext::Present(PresentMode presentMode) {
 	renderManager_.Present();
 	frameCount_++;
 }
@@ -1216,6 +1229,11 @@ Pipeline *VKContext::CreateGraphicsPipeline(const PipelineDesc &desc, const char
 
 	for (auto &iter : desc.shaders) {
 		VKShaderModule *vkshader = (VKShaderModule *)iter;
+		if (!iter) {
+			ERROR_LOG(Log::G3D, "Null shader in pipeline creation");
+			delete pipeline;
+			return nullptr;
+		}
 		vkshader->AddRef();
 		pipeline->deps.push_back(vkshader);
 		if (vkshader->GetStage() == ShaderStage::Vertex) {

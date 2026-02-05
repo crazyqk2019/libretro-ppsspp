@@ -27,6 +27,7 @@
 #include "Common/StringUtils.h"
 #include "Common/GPU/Vulkan/VulkanContext.h"
 #include "Common/Log.h"
+#include "Common/TimeUtil.h"
 #include "GPU/GPUState.h"
 #include "GPU/Common/FragmentShaderGenerator.h"
 #include "GPU/Common/VertexShaderGenerator.h"
@@ -279,14 +280,14 @@ uint64_t ShaderManagerVulkan::UpdateUniforms(bool useBufferedRendering) {
 	return dirty;
 }
 
-void ShaderManagerVulkan::GetShaders(int prim, VertexDecoder *decoder, VulkanVertexShader **vshader, VulkanFragmentShader **fshader, VulkanGeometryShader **gshader, const ComputedPipelineState &pipelineState, bool useHWTransform, bool useHWTessellation, bool weightsAsFloat, bool useSkinInDecode) {
+void ShaderManagerVulkan::GetShaders(int prim, u32 vertexType, VulkanVertexShader **vshader, VulkanFragmentShader **fshader, VulkanGeometryShader **gshader, const ComputedPipelineState &pipelineState, bool useHWTransform, bool useHWTessellation, bool weightsAsFloat, bool useSkinInDecode) {
 	VulkanContext *vulkan = (VulkanContext *)draw_->GetNativeObject(Draw::NativeObject::CONTEXT);
 
 	VShaderID VSID;
 	VulkanVertexShader *vs = nullptr;
 	if (gstate_c.IsDirty(DIRTY_VERTEXSHADER_STATE)) {
 		gstate_c.Clean(DIRTY_VERTEXSHADER_STATE);
-		ComputeVertexShaderID(&VSID, decoder, useHWTransform, useHWTessellation, weightsAsFloat, useSkinInDecode);
+		ComputeVertexShaderID(&VSID, vertexType, useHWTransform, useHWTessellation, weightsAsFloat, useSkinInDecode);
 		if (VSID == lastVSID_) {
 			_dbg_assert_(lastVShader_ != nullptr);
 			vs = lastVShader_;
@@ -491,7 +492,7 @@ enum class VulkanCacheDetectFlags {
 };
 
 #define CACHE_HEADER_MAGIC 0xff51f420 
-#define CACHE_VERSION 52
+#define CACHE_VERSION 53
 
 struct VulkanCacheHeader {
 	uint32_t magic;
@@ -505,10 +506,10 @@ struct VulkanCacheHeader {
 
 bool ShaderManagerVulkan::LoadCacheFlags(FILE *f, DrawEngineVulkan *drawEngine) {
 	VulkanCacheHeader header{};
-	long pos = ftell(f);
+	int64_t pos = File::Ftell(f);
 	bool success = fread(&header, sizeof(header), 1, f) == 1;
 	// We'll read it again later, this is just to check the flags.
-	success = success && fseek(f, pos, SEEK_SET) == 0;
+	success = success && File::Fseek(f, pos, SEEK_SET) == 0;
 	if (!success || header.magic != CACHE_HEADER_MAGIC) {
 		WARN_LOG(Log::G3D, "Shader cache magic mismatch");
 		return false;

@@ -134,15 +134,29 @@ namespace Reporting
 
 		AndroidJNIThreadContext jniContext;
 
-		FileLoader *fileLoader = ResolveFileLoaderTarget(ConstructFileLoader(crcFilename));
-		BlockDevice *blockDevice = constructBlockDevice(fileLoader);
+		IdentifiedFileType type;
+
+		std::string errorString;
+		FileLoader *fileLoader = ResolveFileLoaderTarget(ConstructFileLoader(crcFilename), &type, &errorString);
+		if (!fileLoader) {
+			ERROR_LOG(Log::Loader, "Failed to construct file loader for CRC: %s", errorString.c_str());
+			std::lock_guard<std::mutex> guard(crcLock);
+			crcResults[crcFilename] = 0;
+			crcPending = false;
+			crcCond.notify_one();
+			return 0;
+		}
+
+		std::unique_ptr<BlockDevice> blockDevice(ConstructBlockDevice(fileLoader, &errorString));
 
 		u32 crc = 0;
 		if (blockDevice) {
-			crc = CalculateCRC(blockDevice, &crcCancel);
+			crc = CalculateCRC(blockDevice.get(), &crcCancel);
+		} else {
+			ERROR_LOG(Log::Loader, "Failed to read from block device for CRC: %s", errorString.c_str());
 		}
 
-		delete blockDevice;
+		blockDevice.reset();
 		delete fileLoader;
 
 		std::lock_guard<std::mutex> guard(crcLock);
@@ -381,7 +395,7 @@ namespace Reporting
 
 	void UpdateConfig() {
 		currentSupported = IsSupported();
-		if (!currentSupported && PSP_IsInited())
+		if (!currentSupported && PSP_GetBootState() == BootState::Complete)
 			everUnsupported = true;
 	}
 
@@ -438,7 +452,7 @@ namespace Reporting
 	void AddGameplayInfo(UrlEncoder &postdata)
 	{
 		// Just to get an idea of how long they played.
-		if (PSP_IsInited())
+		if (PSP_GetBootState() == BootState::Complete)
 			postdata.Add("ticks", (const uint64_t)CoreTiming::GetTicks());
 
 		float vps, fps;
@@ -536,7 +550,7 @@ namespace Reporting
 		// Don't report from games without a version ID (i.e. random hashed homebrew IDs.)
 		// The problem is, these aren't useful because the hashes end up different for different people.
 		// TODO: Should really hash the ELF instead of the path, but then that affects savestates/cheats.
-		if (PSP_IsInited() && g_paramSFO.GetValueString("DISC_VERSION").empty())
+		if (PSP_GetBootState() == BootState::Complete && g_paramSFO.GetValueString("DISC_VERSION").empty())
 			return false;
 
 		// Some users run the exe from a zip or something, and don't have fonts.
@@ -555,7 +569,7 @@ namespace Reporting
 
 	bool IsEnabled()
 	{
-		if (g_Config.sReportHost.empty() || (!currentSupported && PSP_IsInited()))
+		if (g_Config.sReportHost.empty() || (!currentSupported && PSP_GetBootState() == BootState::Complete))
 			return false;
 		// Disabled by default for now.
 		if (g_Config.sReportHost.compare("default") == 0)

@@ -51,10 +51,6 @@ enum class DestroyType {
 	CLEAR,
 };
 
-// Define this in order to get VTune profile support for the Jit generated code.
-// Add the VTune include/lib directories to the project directories to get this to build.
-// #define USE_VTUNE
-
 // We should be careful not to access these block structures during runtime as they are large.
 // Fine to mess with them at block compile time though.
 struct JitBlock {
@@ -75,10 +71,6 @@ struct JitBlock {
 
 	bool invalid;
 	bool linkStatus[MAX_JIT_BLOCK_EXITS];
-
-#ifdef USE_VTUNE
-	char blockName[32];
-#endif
 
 	// By having a pointer, we avoid a constructor/destructor being generated and dog slow
 	// performance in debug.
@@ -102,15 +94,16 @@ struct JitBlockDebugInfo {
 	std::vector<std::string> targetDisasm;
 };
 
+struct JitBlockProfileStats {
+	int64_t executions;
+	int64_t totalNanos;
+};
+
+// Only used for debugging, so keeping it tight is not that important.
 struct JitBlockMeta {
 	bool valid;
 	uint32_t addr;
 	uint32_t sizeInBytes;
-};
-
-struct JitBlockProfileStats {
-	int64_t executions;
-	int64_t totalNanos;
 };
 
 class JitBlockCacheDebugInterface {

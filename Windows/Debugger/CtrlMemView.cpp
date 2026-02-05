@@ -35,7 +35,7 @@ CtrlMemView::CtrlMemView(HWND _wnd) {
 	SetWindowLong(wnd, GWL_STYLE, GetWindowLong(wnd,GWL_STYLE) | WS_VSCROLL);
 	SetScrollRange(wnd, SB_VERT, -1,1,TRUE);
 
-	const float fontScale = 1.0f / g_display.dpi_scale_real;
+	const float fontScale = 1.0f / g_display.dpi_scale_real_y;
 	charWidth_ = g_Config.iFontWidth * fontScale;
 	rowHeight_ = g_Config.iFontHeight * fontScale;
 	offsetPositionY_ = offsetLine * rowHeight_;
@@ -241,7 +241,7 @@ void CtrlMemView::onPaint(WPARAM wParam, LPARAM lParam) {
 			uint32_t words[4];
 			uint8_t bytes[16];
 		} memory;
-		int valid = debugger_ != nullptr && debugger_->isAlive() ? Memory::ValidSize(address, 16) / 4 : 0;
+		int valid = debugger_ != nullptr && debugger_->isAlive() ? Memory::ClampValidSizeAt(address, 16) / 4 : 0;
 		for (int i = 0; i < valid; ++i) {
 			memory.words[i] = debugger_->readMemory(address + i * 4);
 		}

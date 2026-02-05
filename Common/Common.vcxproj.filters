@@ -250,15 +250,6 @@
     <ClInclude Include="UI\ViewGroup.h">
       <Filter>UI</Filter>
     </ClInclude>
-    <ClInclude Include="GPU\D3D9\D3DCompilerLoader.h">
-      <Filter>GPU\D3D9</Filter>
-    </ClInclude>
-    <ClInclude Include="GPU\D3D9\D3D9ShaderCompiler.h">
-      <Filter>GPU\D3D9</Filter>
-    </ClInclude>
-    <ClInclude Include="GPU\D3D9\D3D9StateCache.h">
-      <Filter>GPU\D3D9</Filter>
-    </ClInclude>
     <ClInclude Include="GPU\D3D11\D3D11Loader.h">
       <Filter>GPU\D3D11</Filter>
     </ClInclude>
@@ -682,6 +673,58 @@
     <ClInclude Include="Net\SocketCompat.h">
       <Filter>Net</Filter>
     </ClInclude>
+    <ClInclude Include="..\ext\sol\config.hpp">
+      <Filter>ext\sol</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\sol\forward.hpp">
+      <Filter>ext\sol</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\sol\sol.hpp">
+      <Filter>ext\sol</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\imgui\imgui_extras.h">
+      <Filter>ext\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="Audio\AudioBackend.h">
+      <Filter>Audio</Filter>
+    </ClInclude>
+    <ClInclude Include="LoongArch64Emitter.h" />
+    <ClInclude Include="Render\AtlasGen.h">
+      <Filter>Render</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\nanosvg\src\nanosvg.h">
+      <Filter>ext\nanosvg</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\nanosvg\src\nanosvgrast.h">
+      <Filter>ext\nanosvg</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\TabHolder.h">
+      <Filter>UI</Filter>
+    </ClInclude>
+    <ClInclude Include="Render\Text\Font.h">
+      <Filter>Render\Text</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\stb\stb_rect_pack.h">
+      <Filter>ext\stb</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\aemu_postoffice\client\delay_impl.h">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\aemu_postoffice\client\log_impl.h">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\aemu_postoffice\client\mutex_impl.h">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\aemu_postoffice\client\postoffice_client.h">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\aemu_postoffice\client\sock_impl.h">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\Notice.h">
+      <Filter>UI</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ABI.cpp" />
@@ -818,9 +861,6 @@
     <ClCompile Include="Math\lin\vec3.cpp">
       <Filter>Math\lin</Filter>
     </ClCompile>
-    <ClCompile Include="Math\fast\fast_matrix.c">
-      <Filter>Math\fast</Filter>
-    </ClCompile>
     <ClCompile Include="Data\Format\RIFF.cpp">
       <Filter>Data\Format</Filter>
     </ClCompile>
@@ -911,20 +951,8 @@
     <ClCompile Include="UI\ViewGroup.cpp">
       <Filter>UI</Filter>
     </ClCompile>
-    <ClCompile Include="GPU\D3D9\thin3d_d3d9.cpp">
-      <Filter>GPU\D3D9</Filter>
-    </ClCompile>
     <ClCompile Include="GPU\D3D11\thin3d_d3d11.cpp">
       <Filter>GPU\D3D11</Filter>
-    </ClCompile>
-    <ClCompile Include="GPU\D3D9\D3DCompilerLoader.cpp">
-      <Filter>GPU\D3D9</Filter>
-    </ClCompile>
-    <ClCompile Include="GPU\D3D9\D3D9ShaderCompiler.cpp">
-      <Filter>GPU\D3D9</Filter>
-    </ClCompile>
-    <ClCompile Include="GPU\D3D9\D3D9StateCache.cpp">
-      <Filter>GPU\D3D9</Filter>
     </ClCompile>
     <ClCompile Include="GPU\D3D11\D3D11Loader.cpp">
       <Filter>GPU\D3D11</Filter>
@@ -1291,6 +1319,34 @@
     <ClCompile Include="..\ext\lua\lzio.c">
       <Filter>ext\lua</Filter>
     </ClCompile>
+    <ClCompile Include="..\ext\imgui\imgui_extras.cpp">
+      <Filter>ext\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="LoongArch64Emitter.cpp" />
+    <ClCompile Include="Render\AtlasGen.cpp">
+      <Filter>Render</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\TabHolder.cpp">
+      <Filter>UI</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\aemu_postoffice\client\delay_impl_cpp.cpp">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\aemu_postoffice\client\log_impl_ppsspp.cpp">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\aemu_postoffice\client\mutex_impl_cpp.cpp">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\aemu_postoffice\client\postoffice.c">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\aemu_postoffice\client\sock_impl_windows.c">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\Notice.cpp">
+      <Filter>UI</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Crypto">
@@ -1368,9 +1424,6 @@
     <Filter Include="GPU">
       <UniqueIdentifier>{3b448d70-d5c6-4732-96f0-29f3e101bfe8}</UniqueIdentifier>
     </Filter>
-    <Filter Include="GPU\D3D9">
-      <UniqueIdentifier>{a1745de8-f61a-4f11-b715-705a8812862e}</UniqueIdentifier>
-    </Filter>
     <Filter Include="GPU\D3D11">
       <UniqueIdentifier>{8241d0c2-78c8-4fc6-9543-69042ec5eb54}</UniqueIdentifier>
     </Filter>
@@ -1415,6 +1468,21 @@
     </Filter>
     <Filter Include="ext\lua">
       <UniqueIdentifier>{71e2e5df-5cfb-41e6-97da-f71584a7394e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ext\sol">
+      <UniqueIdentifier>{ec7d8691-bb7f-4689-b66a-cb60c1f48afd}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Audio">
+      <UniqueIdentifier>{92746a51-33a9-4a00-af10-3538322f04f0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ext\nanosvg">
+      <UniqueIdentifier>{da5bd3c2-d1d9-4e8f-972f-9e53e2a34049}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ext\stb">
+      <UniqueIdentifier>{8e8641a4-f1db-4609-acc4-66aec9ed8440}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ext\aemu_postoffice">
+      <UniqueIdentifier>{9352e975-d162-4110-b6a0-e8a4639d5b90}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -1468,5 +1536,10 @@
     <None Include="..\ext\lua\README.md">
       <Filter>ext\lua</Filter>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Natvis Include="Data\Collections\FastVec.natvis">
+      <Filter>Data\Collections</Filter>
+    </Natvis>
   </ItemGroup>
 </Project>

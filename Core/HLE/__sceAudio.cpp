@@ -18,6 +18,7 @@
 #include <atomic>
 #include <mutex>
 #include <algorithm>
+
 #include "Common/Common.h"
 #include "Common/File/Path.h"
 #include "Common/Serialize/Serializer.h"
@@ -25,17 +26,17 @@
 #include "Common/Data/Collections/FixedSizeQueue.h"
 #include "Common/System/System.h"
 #include "Common/Math/SIMDHeaders.h"
+#include "Common/StringUtils.h"
+
 #include "Core/Config.h"
 #include "Core/CoreTiming.h"
 #include "Core/MemMapHelpers.h"
 #include "Core/Reporting.h"
 #include "Core/System.h"
-#ifndef MOBILE_DEVICE
 #include "Core/WaveFile.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Core/HLE/sceKernelTime.h"
-#include "StringUtils.h"
-#endif
+#include "Core/HLE/ErrorCodes.h"
 #include "Core/HLE/__sceAudio.h"
 #include "Core/HLE/sceAudio.h"
 #include "Core/HLE/sceKernel.h"
@@ -110,8 +111,8 @@ void __AudioInit() {
 	CoreTiming::ScheduleEvent(audioIntervalCycles, eventAudioUpdate, 0);
 	CoreTiming::ScheduleEvent(audioHostIntervalCycles, eventHostAudioUpdate, 0);
 	for (u32 i = 0; i < PSP_AUDIO_CHANNEL_MAX + 1; i++) {
-		chans[i].index = i;
-		chans[i].clear();
+		g_audioChans[i].index = i;
+		g_audioChans[i].clear();
 	}
 
 	mixBuffer = new s32[hwBlockSize * 2];
@@ -155,17 +156,17 @@ void __AudioDoState(PointerWrap &p) {
 		System_AudioClear();
 	}
 
-	int chanCount = ARRAY_SIZE(chans);
+	int chanCount = ARRAY_SIZE(g_audioChans);
 	Do(p, chanCount);
-	if (chanCount != ARRAY_SIZE(chans))
+	if (chanCount != ARRAY_SIZE(g_audioChans))
 	{
 		ERROR_LOG(Log::sceAudio, "Savestate failure: different number of audio channels.");
 		p.SetError(p.ERROR_FAILURE);
 		return;
 	}
 	for (int i = 0; i < chanCount; ++i) {
-		chans[i].index = i;
-		chans[i].DoState(p);
+		g_audioChans[i].index = i;
+		g_audioChans[i].DoState(p);
 	}
 
 	__AudioCPUMHzChange();
@@ -177,8 +178,8 @@ void __AudioShutdown() {
 
 	mixBuffer = 0;
 	for (u32 i = 0; i < PSP_AUDIO_CHANNEL_MAX + 1; i++) {
-		chans[i].index = i;
-		chans[i].clear();
+		g_audioChans[i].index = i;
+		g_audioChans[i].clear();
 	}
 
 #ifndef MOBILE_DEVICE
@@ -283,7 +284,7 @@ u32 __AudioEnqueue(AudioChannel &chan, int chanNum, bool blocking) {
 	return ret;
 }
 
-inline void __AudioWakeThreads(AudioChannel &chan, int result, int step) {
+void __AudioWakeThreads(AudioChannel &chan, int result, int step) {
 	u32 error;
 	bool wokeThreads = false;
 	for (size_t w = 0; w < chan.waitingThreads.size(); ++w) {
@@ -337,10 +338,11 @@ void __AudioUpdate(bool resetRecording) {
 	int16_t srcBuffer[srcBufferSize];
 
 	for (u32 i = 0; i < PSP_AUDIO_CHANNEL_MAX + 1; i++)	{
-		if (!chans[i].reserved)
+		if (!g_audioChans[i].reserved) {
 			continue;
+		}
 
-		__AudioWakeThreads(chans[i], 0, hwBlockSize);
+		__AudioWakeThreads(g_audioChans[i], 0, hwBlockSize);
 
 		if (!chanSampleQueues[i].size()) {
 			continue;
@@ -356,6 +358,11 @@ void __AudioUpdate(bool resetRecording) {
 		size_t sz1, sz2;
 
 		chanSampleQueues[i].popPointers(sz, &buf1, &sz1, &buf2, &sz2);
+
+		// We do this check as the very last thing before mixing, to maximize compatibility.
+		if (g_audioChans[i].mute) {
+			continue;
+		}
 
 		if (needsResample) {
 			auto read = [&](size_t i) {

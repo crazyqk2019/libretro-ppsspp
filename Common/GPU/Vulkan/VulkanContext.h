@@ -1,11 +1,14 @@
 #pragma once
 
+#include <cstdint>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <utility>
 #include <functional>
 
+#include "Common/Common.h"
 #include "Common/Log.h"
 #include "Common/GPU/Vulkan/VulkanLoader.h"
 #include "Common/GPU/Vulkan/VulkanDebug.h"
@@ -20,13 +23,11 @@
 #define VK_PROFILE_BEGIN(vulkan, cmd, stage, ...) vulkan->GetProfiler()->Begin(cmd, stage, __VA_ARGS__);
 #define VK_PROFILE_END(vulkan, cmd, stage) vulkan->GetProfiler()->End(cmd, stage);
 
-enum {
-	VULKAN_FLAG_VALIDATE = 1,
-	VULKAN_FLAG_PRESENT_MAILBOX = 2,
-	VULKAN_FLAG_PRESENT_IMMEDIATE = 4,
-	VULKAN_FLAG_PRESENT_FIFO_RELAXED = 8,
-	VULKAN_FLAG_PRESENT_FIFO = 16,
+enum class VulkanInitFlags : uint32_t {
+	VALIDATE = (1 << 0),
+	DISABLE_IMPLICIT_LAYERS = (1 << 5),
 };
+ENUM_CLASS_BITOPS(VulkanInitFlags);
 
 enum {
 	VULKAN_VENDOR_NVIDIA = 0x000010de,
@@ -51,6 +52,7 @@ template<class R, class T> inline void ChainStruct(R &root, T *newStruct) {
 
 // Not all will be usable on all platforms, of course...
 enum WindowSystem {
+	WINDOWSYSTEM_UNINITIALIZED,
 #ifdef _WIN32
 	WINDOWSYSTEM_WIN32,
 #endif
@@ -178,14 +180,15 @@ public:
 	struct CreateInfo {
 		const char *app_name;
 		int app_ver;
-		uint32_t flags;
+		VulkanInitFlags flags;
+		std::string customDriver;
 	};
 
 	VkResult CreateInstance(const CreateInfo &info);
 	void DestroyInstance();
 
-	int GetBestPhysicalDevice();
-	int GetPhysicalDeviceByName(const std::string &name);
+	int GetBestPhysicalDevice() const;
+	int GetPhysicalDeviceByName(std::string_view name) const;
 
 	// Convenience method to avoid code duplication.
 	// If it returns false, delete the context.
@@ -202,8 +205,10 @@ public:
 
 	VkDevice GetDevice() const { return device_; }
 	VkInstance GetInstance() const { return instance_; }
-	uint32_t GetFlags() const { return flags_; }
-	void UpdateFlags(uint32_t flags) { flags_ = flags; }
+	VulkanInitFlags GetInitFlags() const { return createInfo_.flags; }
+
+	// Of course, this won't update things that can only change on first init.
+	void UpdateCreateInfo(const VulkanContext::CreateInfo &info) { createInfo_ = info; }
 
 	VulkanDeleteList &Delete() { return globalDeleteList_; }
 
@@ -212,7 +217,8 @@ public:
 	VkResult InitSurface(WindowSystem winsys, void *data1, void *data2);
 	VkResult ReinitSurface();
 
-	bool InitSwapchain();
+	// If the present mode is not available, will fall back to the first available (which is almost always FIFO).
+	bool InitSwapchain(VkPresentModeKHR desiredPresentMode);
 	void SetCbGetDrawSize(std::function<VkExtent2D()>);
 
 	void DestroySwapchain();
@@ -226,9 +232,6 @@ public:
 	// Utility functions for shorter code
 	VkFence CreateFence(bool presignalled);
 	bool CreateShaderModule(const std::vector<uint32_t> &spirv, VkShaderModule *shaderModule, const char *tag);
-
-	int GetBackbufferWidth() { return (int)swapChainExtent_.width; }
-	int GetBackbufferHeight() { return (int)swapChainExtent_.height; }
 
 	void BeginFrame(VkCommandBuffer firstCommandBuffer);
 	void EndFrame();
@@ -285,6 +288,7 @@ public:
 		VkPhysicalDevicePresentWaitFeaturesKHR presentWait;
 		VkPhysicalDevicePresentIdFeaturesKHR presentId;
 		VkPhysicalDeviceProvokingVertexFeaturesEXT provokingVertex;
+		VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR presentModeFifoProps;
 	};
 
 	const PhysicalDeviceProps &GetPhysicalDeviceProperties(int i = -1) const {
@@ -368,12 +372,13 @@ public:
 		return curFrame_;
 	}
 
-	VkSwapchainKHR GetSwapchain() const {
-		return swapchain_;
-	}
-	VkFormat GetSwapchainFormat() const {
-		return swapchainFormat_;
-	}
+	VkSwapchainKHR GetSwapchain() const { return swapchain_; }
+	VkFormat GetSwapchainFormat() const { return swapchainFormat_; }
+	bool IsSwapchainInited() const { return swapchainInited_; }
+	bool HasRealSwapchain() const { return swapChainExtent_.width > 0; }
+
+	int GetBackbufferWidth() { return (int)swapChainExtent_.width; }
+	int GetBackbufferHeight() { return (int)swapChainExtent_.height; }
 
 	void SetProfilerEnabledPtr(bool *enabled) {
 		for (auto &frame : frame_) {
@@ -411,6 +416,15 @@ public:
 		return availablePresentModes_;
 	}
 
+	bool PresentModeSupported(VkPresentModeKHR mode) const {
+		for (const auto &m : availablePresentModes_) {
+			if (m == mode) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	int GetLastDeleteCount() const {
 		return frame_[curFrame_].deleteList.GetLastDeleteCount();
 	}
@@ -438,7 +452,7 @@ private:
 
 	bool CheckLayers(const std::vector<LayerProperties> &layer_props, const std::vector<const char *> &layer_names) const;
 
-	WindowSystem winsys_{};
+	WindowSystem winsys_ = WINDOWSYSTEM_UNINITIALIZED;
 
 	// Don't use the real types here to avoid having to include platform-specific stuff
 	// that we really don't want in everything that uses VulkanContext.
@@ -483,7 +497,8 @@ private:
 	// Swap chain extent
 	VkExtent2D swapChainExtent_{};
 
-	int flags_ = 0;
+	VulkanContext::CreateInfo createInfo_{};
+
 	PerfClass devicePerfClass_ = PerfClass::SLOW;
 
 	int inflightFrames_ = MAX_INFLIGHT_FRAMES;
@@ -506,6 +521,7 @@ private:
 	VkFormat swapchainFormat_ = VK_FORMAT_UNDEFINED;
 
 	uint32_t queue_count = 0;
+	bool swapchainInited_ = false;
 
 	PhysicalDeviceFeatures deviceFeatures_;
 

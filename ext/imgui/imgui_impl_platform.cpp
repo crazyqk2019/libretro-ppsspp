@@ -15,7 +15,7 @@ Bounds g_imguiCentralNodeBounds;
 void ImGui_ImplPlatform_KeyEvent(const KeyInput &key) {
 	ImGuiIO &io = ImGui::GetIO();
 
-	if (key.flags & KEY_DOWN) {
+	if (key.flags & KeyInputFlags::DOWN) {
 		// Specially handle scroll events and any other special keys.
 		switch (key.keyCode) {
 		case NKCODE_EXT_MOUSEWHEEL_UP:
@@ -34,13 +34,13 @@ void ImGui_ImplPlatform_KeyEvent(const KeyInput &key) {
 		}
 		}
 	}
-	if (key.flags & KEY_UP) {
+	if (key.flags & KeyInputFlags::UP) {
 		ImGuiKey keyCode = KeyCodeToImGui(key.keyCode);
 		if (keyCode != ImGuiKey_None) {
 			io.AddKeyEvent(keyCode, false);
 		}
 	}
-	if (key.flags & KEY_CHAR) {
+	if (key.flags & KeyInputFlags::CHAR) {
 		const int unichar = key.unicodeChar;
 
 		if (unichar >= 0x20) {
@@ -56,15 +56,15 @@ void ImGui_ImplPlatform_TouchEvent(const TouchInput &touch) {
 	ImGuiIO& io = ImGui::GetIO();
 
 	// We use real pixels in the imgui, no DPI adjustment yet.
-	float x = touch.x / g_display.dpi_scale;
-	float y = touch.y / g_display.dpi_scale;
+	float x = touch.x / g_display.dpi_scale_x;
+	float y = touch.y / g_display.dpi_scale_y;
 
-	if (touch.flags & TOUCH_MOVE) {
+	if (touch.flags & TouchInputFlags::MOVE) {
 		io.AddMousePosEvent(x, y);
 	}
-	if (touch.flags & TOUCH_DOWN) {
+	if (touch.flags & TouchInputFlags::DOWN) {
 		io.AddMousePosEvent(x, y);
-		if (touch.flags & TOUCH_MOUSE) {
+		if (touch.flags & TouchInputFlags::MOUSE) {
 			if (touch.buttons & 1)
 				io.AddMouseButtonEvent(0, true);
 			if (touch.buttons & 2)
@@ -73,9 +73,9 @@ void ImGui_ImplPlatform_TouchEvent(const TouchInput &touch) {
 			io.AddMouseButtonEvent(0, true);
 		}
 	}
-	if (touch.flags & TOUCH_UP) {
+	if (touch.flags & TouchInputFlags::UP) {
 		io.AddMousePosEvent(x, y);
-		if (touch.flags & TOUCH_MOUSE) {
+		if (touch.flags & TouchInputFlags::MOUSE) {
 			if (touch.buttons & 1)
 				io.AddMouseButtonEvent(0, false);
 			if (touch.buttons & 2)
@@ -189,6 +189,7 @@ ImGuiKey KeyCodeToImGui(InputKeyCode keyCode) {
 	case NKCODE_COMMA: return ImGuiKey_Comma;
 	case NKCODE_PERIOD: return ImGuiKey_Period;
 	case NKCODE_MINUS: return ImGuiKey_Minus;
+	case NKCODE_PLUS: return ImGuiKey_Equal;  // Hmm
 	case NKCODE_EQUALS: return ImGuiKey_Equal;
 	case NKCODE_LEFT_BRACKET: return ImGuiKey_LeftBracket;
 	case NKCODE_RIGHT_BRACKET: return ImGuiKey_RightBracket;
@@ -243,8 +244,12 @@ ImGuiKey KeyCodeToImGui(InputKeyCode keyCode) {
 	case NKCODE_EXT_MOUSEWHEEL_UP:
 		// Keys ignored for imgui
 	 	return ImGuiKey_None;
-	case NKCODE_EXT_PRINTSCREEN:
+	case NKCODE_PRINTSCREEN:
 		return ImGuiKey_PrintScreen;
+
+	case NKCODE_EXT_PIPE:
+		// No valid mapping exists.
+		return ImGuiKey_None;
 
 	default:
 		WARN_LOG(Log::System, "Unmapped ImGui keycode conversion from %d", keyCode);

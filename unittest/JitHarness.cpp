@@ -97,17 +97,17 @@ double ExecCPUTest(bool clearCache = true) {
 
 static void SetupJitHarness() {
 	// We register a syscall so we have an easy way to finish the test.
-	RegisterModule("UnitTestFakeSyscalls", ARRAY_SIZE(UnitTestFakeSyscalls), UnitTestFakeSyscalls);
+	RegisterHLEModule("UnitTestFakeSyscalls", ARRAY_SIZE(UnitTestFakeSyscalls), UnitTestFakeSyscalls);
 
 	// This is pretty much the bare minimum required to setup jit.
-	coreState = CORE_POWERUP;
+	coreState = CORE_RUNNING_CPU;
 	currentMIPS = &mipsr4k;
 	g_symbolMap = new SymbolMap();
 	Memory::g_MemorySize = Memory::RAM_NORMAL_SIZE;
 	PSP_CoreParameter().cpuCore = CPUCore::INTERPRETER;
 	PSP_CoreParameter().fastForward = true;
 
-	Memory::Init();
+	Memory::Init(Memory::MemMapSetupFlags::Default);
 	mipsr4k.Reset();
 	CoreTiming::Init();
 	InitVFPU();
@@ -166,10 +166,11 @@ bool TestJit() {
 		*p++ = 0xD03C0000 | (1 << 7) | (1 << 15) | (7 << 8);
 		*p++ = 0xD03C0000 | (1 << 7) | (1 << 15) | (7 << 8);
 		*/
+		std::string error;
 		for (size_t j = 0; j < ARRAY_SIZE(lines); ++j) {
 			p++;
-			if (!MIPSAsm::MipsAssembleOpcode(lines[j], currentDebugMIPS, addr)) {
-				printf("ERROR: %s\n", MIPSAsm::GetAssembleError().c_str());
+			if (!MipsAssembleOpcode(lines[j], currentDebugMIPS, addr, &error)) {
+				printf("ERROR: %s\n", error.c_str());
 				compileSuccess = false;
 			}
 			addr += 4;

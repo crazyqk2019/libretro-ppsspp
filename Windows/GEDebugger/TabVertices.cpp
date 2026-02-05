@@ -169,7 +169,7 @@ int CtrlVertexList::GetRowCount() {
 	// TODO: Maybe there are smarter ways?  Also, is this the best place to recalc?
 	auto state = gpuDebug->GetGState();
 
-	int rowCount_ = gpuDebug->GetCurrentPrimCount();
+	rowCount_ = gpuDebug->GetCurrentPrimCount();
 	if (!gpuDebug->GetCurrentDrawAsDebugVertices(rowCount_, vertices, indices)) {
 		rowCount_ = 0;
 	}
@@ -544,10 +544,11 @@ void CtrlMatrixList::OnRightClick(int row, int column, const POINT &point) {
 
 	case ID_DISASM_COPYINSTRUCTIONDISASM:
 	{
+		// Not really copy instruction, more like copy a float.
 		float val;
 		if (GetValue(gpuDebug->GetGState(), row, column, val)) {
-			wchar_t dest[512];
-			swprintf(dest, 511, L"%f", val);
+			char dest[128];
+			snprintf(dest, sizeof(dest), "%f", val);
 			W32Util::CopyTextToClipboard(GetHandle(), dest);
 		}
 		break;

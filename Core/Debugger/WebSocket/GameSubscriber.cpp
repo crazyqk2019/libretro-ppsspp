@@ -39,7 +39,7 @@ DebuggerSubscriber *WebSocketGameInit(DebuggerEventHandlerMap &map) {
 //
 // Response (same event name) with no extra data or error.
 void WebSocketGameReset(DebuggerRequest &req) {
-	if (!PSP_IsInited())
+	if (PSP_GetBootState() != BootState::Complete)
 		return req.Fail("Game not running");
 
 	bool needBreak = false;
@@ -49,14 +49,9 @@ void WebSocketGameReset(DebuggerRequest &req) {
 	if (needBreak)
 		PSP_CoreParameter().startBreak = true;
 
-	std::string resetError;
-	if (!PSP_Reboot(&resetError)) {
-		ERROR_LOG(Log::Boot, "Error resetting: %s", resetError.c_str());
-		return req.Fail("Could not reset");
-	}
-
-	System_Notify(SystemNotification::BOOT_DONE);
-	System_Notify(SystemNotification::DISASSEMBLY);
+	// We can only support async resets here. A lot of the stuff in init must happen on the EmuThread,
+	// and we are not on it here.
+	System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
 
 	req.Respond();
 }
@@ -73,7 +68,7 @@ void WebSocketGameReset(DebuggerRequest &req) {
 //  - paused: boolean, true when gameplay is paused (not the same as stepping.)
 void WebSocketGameStatus(DebuggerRequest &req) {
 	JsonWriter &json = req.Respond();
-	if (PSP_IsInited()) {
+	if (PSP_GetBootState() == BootState::Complete) {
 		json.pushDict("game");
 		json.writeString("id", g_paramSFO.GetDiscID());
 		json.writeString("version", g_paramSFO.GetValueString("DISC_VERSION"));

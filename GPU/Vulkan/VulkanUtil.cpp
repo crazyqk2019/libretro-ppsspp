@@ -19,7 +19,16 @@
 #include "Common/Log.h"
 #include "Common/StringUtils.h"
 #include "Common/GPU/Vulkan/VulkanContext.h"
+#include "Common/Data/Text/Parsers.h"
+#include "Core/Config.h"
+#include "Core/FrameTiming.h"
 #include "GPU/Vulkan/VulkanUtil.h"
+
+#ifdef _DEBUG
+static const bool g_Validate = true;
+#else
+static const bool g_Validate = false;
+#endif
 
 using namespace PPSSPP_VK;
 
@@ -27,6 +36,40 @@ const VkComponentMapping VULKAN_4444_SWIZZLE = { VK_COMPONENT_SWIZZLE_A, VK_COMP
 const VkComponentMapping VULKAN_1555_SWIZZLE = { VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_A };
 const VkComponentMapping VULKAN_565_SWIZZLE = { VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_IDENTITY };
 const VkComponentMapping VULKAN_8888_SWIZZLE = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+
+VkPresentModeKHR ConfigPresentModeToVulkan(Draw::DrawContext *draw) {
+	g_frameTiming.ComputePresentMode(draw, false);
+	Draw::PresentMode presentMode = g_frameTiming.PresentMode();
+	switch (presentMode) {
+	case Draw::PresentMode::IMMEDIATE:
+		return VK_PRESENT_MODE_IMMEDIATE_KHR;
+	case Draw::PresentMode::MAILBOX:
+		return VK_PRESENT_MODE_MAILBOX_KHR;
+	case Draw::PresentMode::FIFO:
+	default:
+		return VK_PRESENT_MODE_FIFO_KHR;
+	}
+}
+
+// TODO: Share this between backends.
+static VulkanInitFlags VulkanInitFlagsFromConfig() {
+	VulkanInitFlags flags = (VulkanInitFlags)0;
+	if (g_Validate) {
+		flags |= VulkanInitFlags::VALIDATE;
+	}
+	if (g_Config.bVulkanDisableImplicitLayers) {
+		flags |= VulkanInitFlags::DISABLE_IMPLICIT_LAYERS;
+	}
+	return flags;
+}
+
+void InitVulkanCreateInfoFromConfig(VulkanContext::CreateInfo *info) {
+	Version gitVer(PPSSPP_GIT_VERSION);
+	info->app_name = "PPSSPP";
+	info->app_ver = gitVer.ToInteger();
+	info->flags = VulkanInitFlagsFromConfig();
+	info->customDriver = g_Config.sCustomDriver;
+}
 
 VkShaderModule CompileShaderModule(VulkanContext *vulkan, VkShaderStageFlagBits stage, const char *code, std::string *error) {
 	std::vector<uint32_t> spirv;

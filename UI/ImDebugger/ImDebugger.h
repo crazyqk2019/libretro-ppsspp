@@ -15,11 +15,14 @@
 
 #include "Core/Debugger/DisassemblyManager.h"
 #include "Core/Debugger/DebugInterface.h"
+#include "Core/Debugger/Watch.h"
 
 #include "UI/ImDebugger/ImDisasmView.h"
 #include "UI/ImDebugger/ImMemView.h"
 #include "UI/ImDebugger/ImStructViewer.h"
+#include "UI/ImDebugger/ImJitViewer.h"
 #include "UI/ImDebugger/ImGe.h"
+#include "UI/ImDebugger/ImConsole.h"
 
 // This is the main state container of the whole Dear ImGUI-based in-game cross-platform debugger.
 //
@@ -29,76 +32,6 @@
 class MIPSDebugInterface;
 class GPUDebugInterface;
 struct ImConfig;
-
-// Corresponds to the CDisasm dialog
-class ImDisasmWindow {
-public:
-	void Draw(MIPSDebugInterface *mipsDebug, ImConfig &cfg, ImControl &control, CoreState coreState);
-	ImDisasmView &View() {
-		return disasmView_;
-	}
-	void NotifyStep() {
-		disasmView_.NotifyStep();
-	}
-	void DirtySymbolMap() {
-		symsDirty_ = true;
-	}
-	const char *Title() const {
-		return "CPU Debugger";
-	}
-
-private:
-	// We just keep the state directly in the window. Can refactor later.
-
-	enum {
-		INVALID_ADDR = 0xFFFFFFFF,
-	};
-
-	u32 gotoAddr_ = 0x08800000;
-
-	// Symbol cache
-	std::vector<SymbolEntry> symCache_;
-	bool symsDirty_ = true;
-	int selectedSymbol_ = -1;
-	char selectedSymbolName_[128];
-
-	ImDisasmView disasmView_;
-	char searchTerm_[64]{};
-};
-
-// Corresponds to the CMemView dialog
-class ImMemWindow {
-public:
-	void Draw(MIPSDebugInterface *mipsDebug, ImConfig &cfg, ImControl &control, int index);
-	ImMemView &View() {
-		return memView_;
-	}
-	void DirtySymbolMap() {
-		symsDirty_ = true;
-	}
-	void GotoAddr(u32 addr) {
-		gotoAddr_ = addr;
-		memView_.gotoAddr(addr);
-	}
-	static const char *Title(int index);
-
-private:
-	// We just keep the state directly in the window. Can refactor later.
-	enum {
-		INVALID_ADDR = 0xFFFFFFFF,
-	};
-
-	// Symbol cache
-	std::vector<SymbolEntry> symCache_;
-	bool symsDirty_ = true;
-	int selectedSymbol_ = -1;
-	char selectedSymbolName_[128];
-
-	ImMemView memView_;
-	char searchTerm_[64]{};
-
-	u32 gotoAddr_ = 0x08800000;
-};
 
 // Snapshot of the MIPS CPU and other things we want to show diffs off.
 struct ImSnapshotState {
@@ -115,7 +48,6 @@ class IniFile;
 
 struct ImConfig {
 	// Defaults for saved settings are set in SyncConfig.
-
 	bool disasmOpen;
 	bool demoOpen;
 	bool gprOpen;
@@ -124,9 +56,10 @@ struct ImConfig {
 	bool threadsOpen;
 	bool callstackOpen;
 	bool breakpointsOpen;
+	bool symbolsOpen;
 	bool modulesOpen;
 	bool hleModulesOpen;
-	bool audioDecodersOpen;
+	bool mediaDecodersOpen;
 	bool structViewerOpen;
 	bool framebuffersOpen;
 	bool texturesOpen;
@@ -138,7 +71,9 @@ struct ImConfig {
 	bool debugStatsOpen;
 	bool geDebuggerOpen;
 	bool geStateOpen;
+	bool geVertsOpen;
 	bool schedulerOpen;
+	bool timeOpen;
 	bool watchOpen;
 	bool pixelViewerOpen;
 	bool npOpen;
@@ -149,15 +84,21 @@ struct ImConfig {
 	bool internalsOpen;
 	bool sasAudioOpen;
 	bool logConfigOpen;
+	bool logOpen;
 	bool utilityModulesOpen;
 	bool atracToolOpen;
 	bool memViewOpen[4];
+	bool luaConsoleOpen;
+	bool audioOutOpen;
+	bool paramSFOOpen;
+	bool jitViewerOpen;
 
 	// HLE explorer settings
 	// bool filterByUsed = true;
 
 	// Various selections
-	int selectedModule = 0;
+	int selectedModuleId = 0;
+	int selectedSymbolModule = 0;
 	int selectedUtilityModule = 0;
 	int selectedThread = 0;
 	int selectedKernelObject = 0;
@@ -165,7 +106,10 @@ struct ImConfig {
 	int selectedBreakpoint = -1;
 	int selectedMemCheck = -1;
 	int selectedAtracCtx = 0;
+	int selectedMp3Ctx = 0;
+	int selectedAacCtx = 0;
 	int selectedMemoryBlock = 0;
+	u32 selectedMpegCtx = 0;
 
 	uint64_t selectedTexAddr = 0;
 
@@ -176,6 +120,8 @@ struct ImConfig {
 	int requesterToken;
 
 	bool sasShowAllVoices = false;
+
+	float fbViewerZoom = 1.0f;
 
 
 	// We use a separate ini file from the main PPSSPP config.
@@ -189,10 +135,34 @@ struct Track;
 class ImAtracToolWindow {
 public:
 	void Draw(ImConfig &cfg);
+	void Load();
 
 	char atracPath_[1024]{};
 	std::unique_ptr<Track> track_;
 	std::string error_;
+	std::string data_;
+};
+
+class ImWatchWindow {
+public:
+	ImWatchWindow();
+	void Draw(ImConfig &cfg, ImControl &control, MIPSDebugInterface *mipsDebug);
+private:
+	std::vector<WatchInfo> watches_;
+
+	char editBuffer_[256];
+	int editingWatchIndex_ = -1;
+	int editingColumn_ = 0;
+	bool setEditFocus_ = false;
+};
+
+class ImLogWindow {
+public:
+	ImLogWindow() {}
+	void Draw(ImConfig &cfg);
+
+private:
+	bool                AutoScroll = true;  // Keep scrolling if already at the bottom.
 };
 
 enum class ImCmd {
@@ -232,6 +202,7 @@ public:
 	void PostCmd(ImCommand cmd) {
 		externalCommand_ = cmd;
 	}
+	void DeviceLost();
 
 private:
 	Path ConfigPath();
@@ -245,7 +216,11 @@ private:
 	ImStructViewer structViewer_;
 	ImGePixelViewerWindow pixelViewer_;
 	ImMemDumpWindow memDumpWindow_;
+	ImWatchWindow watchWindow_;
 	ImAtracToolWindow atracToolWindow_;
+	ImConsole luaConsole_;
+	ImLogWindow logWindow_;
+	ImJitViewerWindow jitViewer_;
 
 	ImSnapshotState newSnapshot_;
 	ImSnapshotState snapshot_;

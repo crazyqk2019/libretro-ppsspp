@@ -33,7 +33,7 @@
 
 #include "Core/Config.h"
 #include "Core/Screenshot.h"
-
+#include "Core/RetroAchievements.h"
 #include "Windows/GEDebugger/GEDebugger.h"
 #include "Windows/GEDebugger/SimpleGLWindow.h"
 #include "Windows/GEDebugger/CtrlDisplayListView.h"
@@ -314,6 +314,7 @@ void CGEDebugger::SetupPreviews() {
 			case ID_GEDBG_ENABLE_PREVIEW:
 				previewsEnabled_ ^= 1;
 				primaryWindow->Redraw();
+				break;
 			default:
 				break;
 			}
@@ -362,6 +363,7 @@ void CGEDebugger::SetupPreviews() {
 			case ID_GEDBG_ENABLE_PREVIEW:
 				previewsEnabled_ ^= 2;
 				secondWindow->Redraw();
+				break;
 			default:
 				break;
 			}
@@ -435,7 +437,7 @@ void CGEDebugger::DescribeSecondPreview(const GPUgstate &state, char desc[256]) 
 }
 
 void CGEDebugger::PreviewExport(const GPUDebugBuffer *dbgBuffer) {
-	const TCHAR *filter = L"PNG Image (*.png)\0*.png\0JPEG Image (*.jpg)\0*.jpg\0All files\0*.*\0\0";
+	constexpr wchar_t *filter = L"PNG Image (*.png)\0*.png\0JPEG Image (*.jpg)\0*.jpg\0All files\0*.*\0\0";
 	std::string fn;
 	if (W32Util::BrowseForFileName(false, GetDlgHandle(), L"Save Preview Image...", nullptr, filter, L"png", fn)) {
 		ScreenshotFormat fmt = fn.find(".jpg") != fn.npos ? ScreenshotFormat::JPG : ScreenshotFormat::PNG;
@@ -576,9 +578,11 @@ void CGEDebugger::UpdatePreviews() {
 		UpdatePrimPreview(primOp, 3);
 	}
 
-	wchar_t primCounter[1024]{};
-	swprintf(primCounter, ARRAY_SIZE(primCounter), L"%d/%d", gpuDebug->PrimsThisFrame(), gpuDebug->PrimsLastFrame());
-	SetDlgItemText(m_hDlg, IDC_GEDBG_PRIMCOUNTER, primCounter);
+	if (gpuDebug) {
+		wchar_t primCounter[1024]{};
+		swprintf(primCounter, ARRAY_SIZE(primCounter), L"%d/%d", gpuDebug->PrimsThisFrame(), gpuDebug->PrimsLastFrame());
+		SetDlgItemText(m_hDlg, IDC_GEDBG_PRIMCOUNTER, primCounter);
+	}
 
 	for (GEDebuggerTab &tabState : tabStates_) {
 		UpdateTab(&tabState);
@@ -950,6 +954,12 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 		} else if (!PSP_IsInited() && primaryBuffer_) {
 			SendMessage(m_hDlg, WM_COMMAND, IDC_GEDBG_RESUME, 0);
 		}
+		if (Achievements::HardcoreModeActive()) {
+			if (g_activeWindow == WINDOW_GEDEBUGGER) {
+				g_activeWindow = WINDOW_OTHER;
+			}
+			SendMessage(m_hDlg, WM_CLOSE, 0, 0);
+		}
 		break;
 
 	case WM_NOTIFY:
@@ -1078,18 +1088,22 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 			SetDlgItemText(m_hDlg, IDC_GEDBG_TEXADDR, L"");
 			SetDlgItemText(m_hDlg, IDC_GEDBG_PRIMCOUNTER, L"");
 
-			gpuDebug->SetBreakNext(GPUDebug::BreakNext::NONE);
+			if (gpuDebug) {
+				gpuDebug->SetBreakNext(GPUDebug::BreakNext::NONE);
+			}
 			break;
 
 		case IDC_GEDBG_RECORD:
-			gpuDebug->GetRecorder()->RecordNextFrame([](const Path &path) {
-				// Opens a Windows Explorer window with the file, when done.
-				System_ShowFileInFolder(path);
-			});
+			if (gpuDebug) {
+				gpuDebug->GetRecorder()->RecordNextFrame([](const Path &path) {
+					// Opens a Windows Explorer window with the file, when done.
+					System_ShowFileInFolder(path);
+				});
+			}
 			break;
 
 		case IDC_GEDBG_FLUSH:
-			if (gpuDebug != nullptr) {
+			if (gpuDebug) {
 				if (!autoFlush_)
 					GPU_FlushDrawing();
 				UpdatePreviews();
@@ -1101,14 +1115,14 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 			break;
 
 		case IDC_GEDBG_FORCEOPAQUE:
-			if (gpuDebug != nullptr) {
+			if (gpuDebug) {
 				forceOpaque_ = SendMessage(GetDlgItem(m_hDlg, IDC_GEDBG_FORCEOPAQUE), BM_GETCHECK, 0, 0) != 0;
 				UpdatePreviews();
 			}
 			break;
 
 		case IDC_GEDBG_SHOWCLUT:
-			if (gpuDebug != nullptr) {
+			if (gpuDebug) {
 				showClut_ = SendMessage(GetDlgItem(m_hDlg, IDC_GEDBG_SHOWCLUT), BM_GETCHECK, 0, 0) != 0;
 				UpdatePreviews();
 			}

@@ -25,7 +25,6 @@
 #include "Common/Log.h"
 #include "Windows/RawInput.h"
 #include "Windows/MainWindow.h"
-#include "Windows/WindowsHost.h"
 #include "Common/CommonFuncs.h"
 #include "Common/SysError.h"
 #include "Core/Config.h"
@@ -177,7 +176,7 @@ namespace WindowsRawInput {
 		{ VK_MBUTTON, NKCODE_EXT_MOUSEBUTTON_3 },
 		{ VK_XBUTTON1, NKCODE_EXT_MOUSEBUTTON_4 },
 		{ VK_XBUTTON2, NKCODE_EXT_MOUSEBUTTON_5 },
-		{ VK_SNAPSHOT, NKCODE_EXT_PRINTSCREEN },
+		{ VK_SNAPSHOT, NKCODE_PRINTSCREEN },
 	};
 
 	void Init() {
@@ -261,7 +260,7 @@ namespace WindowsRawInput {
 		key.deviceId = DEVICE_ID_KEYBOARD;
 
 		if (raw->data.keyboard.Message == WM_KEYDOWN || raw->data.keyboard.Message == WM_SYSKEYDOWN) {
-			key.flags = KEY_DOWN;
+			key.flags = KeyInputFlags::DOWN;
 			key.keyCode = GetTrueVKey(raw->data.keyboard);
 
 			if (key.keyCode) {
@@ -269,7 +268,7 @@ namespace WindowsRawInput {
 				keyboardKeysDown.insert(key.keyCode);
 			}
 		} else if (raw->data.keyboard.Message == WM_KEYUP) {
-			key.flags = KEY_UP;
+			key.flags = KeyInputFlags::UP;
 			key.keyCode = GetTrueVKey(raw->data.keyboard);
 
 			if (key.keyCode) {
@@ -284,7 +283,7 @@ namespace WindowsRawInput {
 	LRESULT ProcessChar(HWND hWnd, WPARAM wParam, LPARAM lParam) {
 		KeyInput key;
 		key.unicodeChar = (int)wParam;  // Note that this is NOT a NKCODE but a Unicode character!
-		key.flags = KEY_CHAR;
+		key.flags = KeyInputFlags::CHAR;
 		key.deviceId = DEVICE_ID_KEYBOARD;
 		NativeKey(key);
 		return 0;
@@ -309,7 +308,7 @@ namespace WindowsRawInput {
 
 		TouchInput touch;
 		touch.id = 0;
-		touch.flags = TOUCH_MOVE;
+		touch.flags = TouchInputFlags::MOVE;
 		touch.x = mouseX;
 		touch.y = mouseY;
 
@@ -341,9 +340,9 @@ namespace WindowsRawInput {
 		};
 
 		for (int i = 0; i < 5; i++) {
-			if (i > 0 || (g_Config.bMouseControl && (GetUIState() == UISTATE_INGAME || g_Config.bMapMouse))) {
+			if (i > 0 || (g_Config.bMouseControl && (GetUIState() == UISTATE_INGAME || g_IsMappingMouseInput))) {
 				if (raw->data.mouse.usButtonFlags & rawInputDownID[i]) {
-					key.flags = KEY_DOWN;
+					key.flags = KeyInputFlags::DOWN;
 					key.keyCode = windowsTransTable[vkInputID[i]];
 					NativeTouch(touch);
 					if (MouseInWindow(hWnd)) {
@@ -351,16 +350,16 @@ namespace WindowsRawInput {
 					}
 					mouseDown[i] = true;
 				} else if (raw->data.mouse.usButtonFlags & rawInputUpID[i]) {
-					key.flags = KEY_UP;
+					key.flags = KeyInputFlags::UP;
 					key.keyCode = windowsTransTable[vkInputID[i]];
 					NativeTouch(touch);
 					if (MouseInWindow(hWnd)) {
 						if (!mouseDown[i]) {
 							// This means they were focused outside, and clicked inside.
 							// Seems intentional, so send a down first.
-							key.flags = KEY_DOWN;
+							key.flags = KeyInputFlags::DOWN;
 							NativeKey(key);
-							key.flags = KEY_UP;
+							key.flags = KeyInputFlags::UP;
 							NativeKey(key);
 						} else {
 							NativeKey(key);
@@ -429,7 +428,7 @@ namespace WindowsRawInput {
 		// Force-release all held keys on the keyboard to prevent annoying stray inputs.
 		KeyInput key;
 		key.deviceId = DEVICE_ID_KEYBOARD;
-		key.flags = KEY_UP;
+		key.flags = KeyInputFlags::UP;
 		for (auto i = keyboardKeysDown.begin(); i != keyboardKeysDown.end(); ++i) {
 			key.keyCode = *i;
 			NativeKey(key);

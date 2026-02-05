@@ -35,6 +35,8 @@
 #include "Common/System/Request.h"
 
 #include "Common/File/PathBrowser.h"
+#include "Common/UI/PopupScreens.h"
+#include "Common/UI/Notice.h"
 #include "Common/Data/Format/JSONReader.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/Common.h"
@@ -47,9 +49,7 @@
 #include "UI/RemoteISOScreen.h"
 #include "UI/OnScreenDisplay.h"
 
-using namespace UI;
-
-static const char *REPORT_HOSTNAME = "report.ppsspp.org";
+static const char * const REPORT_HOSTNAME = "report.ppsspp.org";
 static const int REPORT_PORT = 80;
 
 static bool scanCancelled = false;
@@ -106,7 +106,7 @@ std::string RemoteSubdir() {
 }
 
 bool RemoteISOConnectScreen::FindServer(std::string &resultHost, int &resultPort) {
-	http::Client http;
+	http::Client http(nullptr);
 	Buffer result;
 	int code = 500;
 	bool hadTimeouts = false;
@@ -258,7 +258,6 @@ static bool LoadGameList(const Path &url, std::vector<Path> &games) {
 	browser.SetPath(url);
 	std::vector<File::FileInfo> files;
 	browser.SetUserAgent(StringFromFormat("PPSSPP/%s", PPSSPP_GIT_VERSION));
-	browser.SetRootAlias("ms:", GetSysDirectory(DIRECTORY_MEMSTICK_ROOT));
 	browser.GetListing(files, "iso:cso:chd:pbp:elf:prx:ppdmp:", &scanCancelled);
 	if (scanCancelled) {
 		return false;
@@ -272,30 +271,35 @@ static bool LoadGameList(const Path &url, std::vector<Path> &games) {
 	return !games.empty();
 }
 
-RemoteISOScreen::RemoteISOScreen(const Path &filename) : TabbedUIDialogScreenWithGameBackground(filename) {}
+RemoteISOScreen::RemoteISOScreen(const Path &filename) : UITabbedBaseDialogScreen(filename) {}
 
 
 void RemoteISOScreen::CreateTabs() {
 	auto ri = GetI18NCategory(I18NCat::REMOTEISO);
 
-	UI::LinearLayout *connect = AddTab("Connect", ri->T("Connect"));
-	connect->SetSpacing(5.0f);
-	CreateConnectTab(connect);
+	AddTab("Connect", ri->T("Connect"), [this](UI::LinearLayout *connect) {
+		connect->SetSpacing(5.0f);
+		CreateConnectTab(connect);
+	});
 
-	UI::LinearLayout *settings = AddTab("Settings", ri->T("Settings"));
-	CreateSettingsTab(settings);
+	AddTab("Settings", ri->T("Settings"), [this](UI::LinearLayout *settings) {
+		CreateSettingsTab(settings);
+	});
 }
 
 void RemoteISOScreen::update() {
-	TabbedUIDialogScreenWithGameBackground::update();
+	UITabbedBaseDialogScreen::update();
 
-	if (!WebServerStopped(WebServerFlags::DISCS)) {
+	frameCount_++;
+
+	if (!WebServerStopped(WebServerFlags::DISCS) && frameCount_ > 60) {
 		auto result = IsServerAllowed(g_Config.iRemoteISOPort);
 		if (result == ServerAllowStatus::NO) {
-			firewallWarning_->SetVisibility(V_VISIBLE);
+			firewallWarning_->SetVisibility(UI::V_VISIBLE);
 		} else if (result == ServerAllowStatus::YES) {
-			firewallWarning_->SetVisibility(V_GONE);
+			firewallWarning_->SetVisibility(UI::V_GONE);
 		}
+		frameCount_ = 0;
 	}
 
 	bool nowRunning = !WebServerStopped(WebServerFlags::DISCS);
@@ -313,55 +317,42 @@ void RemoteISOScreen::CreateConnectTab(UI::ViewGroup *tab) {
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 	auto ri = GetI18NCategory(I18NCat::REMOTEISO);
 
-	Margins actionMenuMargins(0, 20, 15, 0);
-	Margins contentMargins(0, 20, 5, 5);
-
-	ViewGroup *leftColumn = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT, 0.4f, contentMargins));
-	LinearLayout *leftColumnItems = new LinearLayout(ORIENT_VERTICAL, new LayoutParams(WRAP_CONTENT, FILL_PARENT));
-	ViewGroup *rightColumn = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(300, FILL_PARENT, actionMenuMargins));
-	LinearLayout *rightColumnItems = new LinearLayout(ORIENT_VERTICAL);
+	using namespace UI;
 
 	if (serverRunning_) {
-		leftColumnItems->Add(new NoticeView(NoticeLevel::SUCCESS, ri->T("Currently sharing"), "", new LinearLayoutParams(Margins(12, 5, 0, 5))));
+		tab->Add(new NoticeView(NoticeLevel::SUCCESS, ri->T("Currently sharing"), "", new LinearLayoutParams(Margins(12, 5, 0, 5))));
 	} else {
-		leftColumnItems->Add(new NoticeView(NoticeLevel::INFO, ri->T("Not currently sharing"), "", new LinearLayoutParams(Margins(12, 5, 0, 5))));
+		tab->Add(new NoticeView(NoticeLevel::INFO, ri->T("Not currently sharing"), "", new LinearLayoutParams(Margins(12, 5, 0, 5))));
 	}
 
 	if ((RemoteISOShareType)g_Config.iRemoteISOShareType == RemoteISOShareType::RECENT) {
-		leftColumnItems->Add(new TextView(ri->T("RemoteISODesc", "Games in your recent list will be shared"), new LinearLayoutParams(Margins(12, 5, 0, 5))));
+		tab->Add(new TextView(ri->T("RemoteISODesc", "Games in your recent list will be shared"), new LinearLayoutParams(Margins(12, 5, 0, 5))));
 	} else {
-		leftColumnItems->Add(new TextView(std::string(ri->T("Share Games (Server)")) + ": " + Path(g_Config.sRemoteISOSharedDir).ToVisualString(), new LinearLayoutParams(Margins(12, 5, 0, 5))));
+		tab->Add(new TextView(std::string(ri->T("Share Games (Server)")) + ": " + Path(g_Config.sRemoteISOSharedDir).ToVisualString(), new LinearLayoutParams(Margins(12, 5, 0, 5))));
 	}
-	leftColumnItems->Add(new TextView(ri->T("RemoteISOWifi", "Note: Connect both devices to the same wifi"), new LinearLayoutParams(Margins(12, 5, 0, 5))));
-	firewallWarning_ = leftColumnItems->Add(new TextView(ri->T("RemoteISOWinFirewall", "WARNING: Windows Firewall is blocking sharing"), new LinearLayoutParams(Margins(12, 5, 0, 5))));
+	tab->Add(new TextView(ri->T("RemoteISOWifi", "Note: Connect both devices to the same wifi"), new LinearLayoutParams(Margins(12, 5, 0, 5))));
+	firewallWarning_ = tab->Add(new TextView(ri->T("RemoteISOWinFirewall", "WARNING: Windows Firewall is blocking sharing"), new LinearLayoutParams(Margins(12, 5, 0, 5))));
 	firewallWarning_->SetTextColor(0xFF0000FF);
 	firewallWarning_->SetVisibility(V_GONE);
 
-	rightColumnItems->SetSpacing(0.0f);
 	Choice *browseChoice = new Choice(ri->T("Browse Games"));
-	rightColumnItems->Add(browseChoice)->OnClick.Handle(this, &RemoteISOScreen::HandleBrowse);
+	tab->Add(browseChoice)->OnClick.Handle(this, &RemoteISOScreen::HandleBrowse);
 	if (WebServerStopping(WebServerFlags::DISCS)) {
-		rightColumnItems->Add(new Choice(ri->T("Stopping..")))->SetDisabledPtr(&serverStopping_);
+		tab->Add(new Choice(ri->T("Stopping..")))->SetDisabledPtr(&serverStopping_);
 		browseChoice->SetEnabled(false);
 	} else if (!WebServerStopped(WebServerFlags::DISCS)) {
-		rightColumnItems->Add(new Choice(ri->T("Stop Sharing")))->OnClick.Handle(this, &RemoteISOScreen::HandleStopServer);
+		tab->Add(new Choice(ri->T("Stop Sharing")))->OnClick.Handle(this, &RemoteISOScreen::HandleStopServer);
 		browseChoice->SetEnabled(false);
 	} else {
-		rightColumnItems->Add(new Choice(ri->T("Share Games (Server)")))->OnClick.Handle(this, &RemoteISOScreen::HandleStartServer);
+		tab->Add(new Choice(ri->T("Share Games (Server)")))->OnClick.Handle(this, &RemoteISOScreen::HandleStartServer);
 		browseChoice->SetEnabled(true);
 	}
-
-	LinearLayout *beforeBack = new LinearLayout(ORIENT_HORIZONTAL, new LayoutParams(FILL_PARENT, FILL_PARENT));
-	beforeBack->Add(leftColumn);
-	beforeBack->Add(rightColumn);
-
-	leftColumn->Add(leftColumnItems);
-	rightColumn->Add(rightColumnItems);
-	tab->Add(beforeBack);
 }
 
 void RemoteISOScreen::CreateSettingsTab(UI::ViewGroup *remoteisoSettings) {
 	serverRunning_ = !WebServerStopped(WebServerFlags::DISCS);
+
+	using namespace UI;
 
 	auto ri = GetI18NCategory(I18NCat::REMOTEISO);
 
@@ -371,7 +362,7 @@ void RemoteISOScreen::CreateSettingsTab(UI::ViewGroup *remoteisoSettings) {
 	remoteisoSettings->Add(new CheckBox(&g_Config.bRemoteTab, ri->T("Show Remote tab on main screen")));
 
 	if (System_GetPropertyBool(SYSPROP_HAS_FOLDER_BROWSER)) {
-		static const char *shareTypes[] = { "Recent files", "Choose directory" };
+		static const char *shareTypes[] = { "Recent games", "Choose directory" };
 		remoteisoSettings->Add(new PopupMultiChoice(&g_Config.iRemoteISOShareType, ri->T("Files to share"), shareTypes, 0, ARRAY_SIZE(shareTypes), I18NCat::REMOTEISO, screenManager()));
 		FolderChooserChoice *folderChooser = remoteisoSettings->Add(new FolderChooserChoice(GetRequesterToken(), &g_Config.sRemoteISOSharedDir, ri->T("Files to share")));
 		folderChooser->SetEnabledFunc([=]() {
@@ -414,40 +405,35 @@ static void CleanupRemoteISOSubdir() {
 }
 
 
-UI::EventReturn RemoteISOScreen::OnChangeRemoteISOSubdir(UI::EventParams &e) {
+void RemoteISOScreen::OnChangeRemoteISOSubdir(UI::EventParams &e) {
 	CleanupRemoteISOSubdir();
-	return UI::EVENT_DONE;
 }
 
-UI::EventReturn RemoteISOScreen::HandleStartServer(UI::EventParams &e) {
+void RemoteISOScreen::HandleStartServer(UI::EventParams &e) {
+	frameCount_ = 0;
 	if (!StartWebServer(WebServerFlags::DISCS)) {
-		return EVENT_SKIPPED;
+		return;
 	}
-
-	return EVENT_DONE;
 }
 
-UI::EventReturn RemoteISOScreen::HandleStopServer(UI::EventParams &e) {
+void RemoteISOScreen::HandleStopServer(UI::EventParams &e) {
 	if (!StopWebServer(WebServerFlags::DISCS)) {
-		return EVENT_SKIPPED;
+		return;
 	}
 
 	serverStopping_ = true;
 	RecreateViews();
-
-	return EVENT_DONE;
 }
 
-UI::EventReturn RemoteISOScreen::HandleBrowse(UI::EventParams &e) {
+void RemoteISOScreen::HandleBrowse(UI::EventParams &e) {
 	screenManager()->push(new RemoteISOConnectScreen());
-	return EVENT_DONE;
 }
 
 RemoteISOConnectScreen::RemoteISOConnectScreen() {
 	scanCancelled = false;
 	scanAborted = false;
 
-	scanThread_ = new std::thread([](RemoteISOConnectScreen *thiz) {
+	scanThread_ = std::thread([](RemoteISOConnectScreen *thiz) {
 		SetCurrentThreadName("RemoteISOScan");
 		thiz->ExecuteScan();
 	}, this);
@@ -464,14 +450,15 @@ RemoteISOConnectScreen::~RemoteISOConnectScreen() {
 			break;
 		}
 	}
-	if (scanThread_->joinable())
-		scanThread_->join();
-	delete scanThread_;
+	if (scanThread_.joinable())
+		scanThread_.join();
 }
 
 void RemoteISOConnectScreen::CreateViews() {
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 	auto ri = GetI18NCategory(I18NCat::REMOTEISO);
+
+	using namespace UI;
 
 	Margins actionMenuMargins(0, 20, 15, 0);
 	Margins contentMargins(0, 20, 5, 5);
@@ -483,7 +470,7 @@ void RemoteISOConnectScreen::CreateViews() {
 	statusView_ = leftColumnItems->Add(new TextView(ri->T("RemoteISOScanning", "Scanning... click Share Games on your desktop"), FLAG_WRAP_TEXT, false, new LinearLayoutParams(Margins(12, 5, 0, 5))));
 
 	rightColumnItems->SetSpacing(0.0f);
-	rightColumnItems->Add(new Choice(di->T("Cancel"), "", false, new AnchorLayoutParams(150, WRAP_CONTENT, 10, NONE, NONE, 10)))->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
+	rightColumnItems->Add(new Choice(di->T("Cancel"), "", new AnchorLayoutParams(150, WRAP_CONTENT, 10, NONE, NONE, 10)))->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
 
 	root_ = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT, 1.0f));
 	root_->Add(leftColumn);
@@ -496,7 +483,7 @@ void RemoteISOConnectScreen::CreateViews() {
 void RemoteISOConnectScreen::update() {
 	auto ri = GetI18NCategory(I18NCat::REMOTEISO);
 
-	UIDialogScreenWithBackground::update();
+	UIBaseDialogScreen::update();
 
 	ScanStatus s = GetStatus();
 	switch (s) {
@@ -509,11 +496,10 @@ void RemoteISOConnectScreen::update() {
 		status_ = ScanStatus::LOADING;
 
 		// Let's reuse scanThread_.
-		if (scanThread_->joinable())
-			scanThread_->join();
-		delete scanThread_;
+		if (scanThread_.joinable())
+			scanThread_.join();
 		statusMessage_.clear();
-		scanThread_ = new std::thread([](RemoteISOConnectScreen *thiz) {
+		scanThread_ = std::thread([](RemoteISOConnectScreen *thiz) {
 			thiz->ExecuteLoad();
 		}, this);
 		break;
@@ -528,11 +514,10 @@ void RemoteISOConnectScreen::update() {
 			status_ = ScanStatus::SCANNING;
 			nextRetry_ = 0.0;
 
-			if (scanThread_->joinable())
-				scanThread_->join();
-			delete scanThread_;
+			if (scanThread_.joinable())
+				scanThread_.join();
 			statusMessage_.clear();
-			scanThread_ = new std::thread([](RemoteISOConnectScreen *thiz) {
+			scanThread_ = std::thread([](RemoteISOConnectScreen *thiz) {
 				thiz->ExecuteScan();
 			}, this);
 		}
@@ -590,9 +575,11 @@ void RemoteISOBrowseScreen::CreateViews() {
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 	auto ri = GetI18NCategory(I18NCat::REMOTEISO);
 
-	bool vertical = UseVerticalLayout();
+	const bool portrait = GetDeviceOrientation() == DeviceOrientation::Portrait;
 
-	TabHolder *leftColumn = new TabHolder(ORIENT_HORIZONTAL, 64, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
+	using namespace UI;
+
+	TabHolder *leftColumn = new TabHolder(ORIENT_HORIZONTAL, 64, TabHolderFlags::Default, nullptr, nullptr, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 	tabHolder_ = leftColumn;
 	tabHolder_->SetTag("RemoteGames");
 	gameBrowsers_.clear();
@@ -602,14 +589,14 @@ void RemoteISOBrowseScreen::CreateViews() {
 	ScrollView *scrollRecentGames = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 	scrollRecentGames->SetTag("RemoteGamesTab");
 	GameBrowser *tabRemoteGames = new GameBrowser(GetRequesterToken(),
-		Path(url_), BrowseFlags::NAVIGATE, &g_Config.bGridView1, screenManager(), "", "",
+		Path(url_), BrowseFlags::NAVIGATE, portrait, &g_Config.bGridView1, screenManager(), "", "",
 		new LinearLayoutParams(FILL_PARENT, FILL_PARENT));
 	tabRemoteGames->SetHomePath(Path(url_));
 
 	scrollRecentGames->Add(tabRemoteGames);
 	gameBrowsers_.push_back(tabRemoteGames);
 
-	leftColumn->AddTab(ri->T("Remote Server"), scrollRecentGames);
+	leftColumn->AddTab(ri->T("Remote Server"), ImageID::invalid(), scrollRecentGames);
 	tabRemoteGames->OnChoice.Handle<MainScreen>(this, &MainScreen::OnGameSelectedInstant);
 	tabRemoteGames->OnHoldChoice.Handle<MainScreen>(this, &MainScreen::OnGameSelected);
 	tabRemoteGames->OnHighlight.Handle<MainScreen>(this, &MainScreen::OnGameHighlight);
@@ -619,9 +606,9 @@ void RemoteISOBrowseScreen::CreateViews() {
 	rightColumnItems->SetSpacing(0.0f);
 	rightColumn->Add(rightColumnItems);
 
-	rightColumnItems->Add(new Choice(di->T("Back"), "", false, new AnchorLayoutParams(150, WRAP_CONTENT, 10, NONE, NONE, 10)))->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
+	rightColumnItems->Add(new Choice(di->T("Back"), ImageID("I_NAVIGATE_BACK"), new AnchorLayoutParams(150, WRAP_CONTENT, 10, NONE, NONE, 10)))->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
 
-	if (vertical) {
+	if (portrait) {
 		root_ = new LinearLayout(ORIENT_VERTICAL);
 		rightColumn->ReplaceLayoutParams(new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 		leftColumn->ReplaceLayoutParams(new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, 1.0));
@@ -637,6 +624,4 @@ void RemoteISOBrowseScreen::CreateViews() {
 	}
 
 	root_->SetDefaultFocusView(tabHolder_);
-
-	upgradeBar_ = 0;
 }

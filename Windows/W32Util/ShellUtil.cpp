@@ -11,12 +11,57 @@
 #include "ShellUtil.h"
 
 #include <shobjidl.h>  // For IFileDialog and related interfaces
+#include <shellapi.h>
 #include <shlobj.h>
 #include <commdlg.h>
 #include <cderr.h>
 #include <wrl/client.h>
 
 namespace W32Util {
+using Microsoft::WRL::ComPtr;
+
+void OpenDisplaySettings() {
+	// Windows 10/11 Settings URI
+	HINSTANCE res = ShellExecuteW(NULL, L"open", L"ms-settings:display-advanced", NULL, NULL, SW_SHOWNORMAL);
+	if ((INT_PTR)res <= 32) {
+		// Fallback for Windows 7/8
+		ShellExecuteW(NULL, L"open", L"desk.cpl", NULL, NULL, SW_SHOWNORMAL);
+	}
+}
+
+bool MoveToTrash(const Path &path) {
+	ComPtr<IFileOperation> pFileOp;
+
+	HRESULT hr = CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&pFileOp));
+	if (FAILED(hr)) {
+		return false;
+	}
+
+	// Set operation flags
+	hr = pFileOp->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT);
+	if (FAILED(hr)) {
+		return false;
+	}
+
+	// Create a shell item from the file path
+	ComPtr<IShellItem> pItem;
+	hr = SHCreateItemFromParsingName(path.ToWString().c_str(), nullptr, IID_PPV_ARGS(&pItem));
+	if (SUCCEEDED(hr)) {
+		// Schedule the delete (move to recycle bin)
+		hr = pFileOp->DeleteItem(pItem.Get(), nullptr);
+		if (SUCCEEDED(hr)) {
+			hr = pFileOp->PerformOperations(); // Execute
+		}
+	}
+
+	if (SUCCEEDED(hr)) {
+		INFO_LOG(Log::IO, "Moved file to trash successfully: %s", path.c_str());
+		return true;
+	} else {
+		WARN_LOG(Log::IO, "Failed to move file to trash: %s", path.c_str());
+		return false;
+	}
+}
 
 std::string BrowseForFolder2(HWND parent, std::string_view title, std::string_view initialPath) {
 	const std::wstring wtitle = ConvertUTF8ToWString(title);
@@ -25,7 +70,7 @@ std::string BrowseForFolder2(HWND parent, std::string_view title, std::string_vi
 	std::wstring selectedFolder;
 
 	// Create the FileOpenDialog object
-	IFileDialog* pFileDialog = nullptr;
+	ComPtr<IFileDialog> pFileDialog;
 	HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFileDialog));
 	if (!SUCCEEDED(hr)) {
 		return "";
@@ -41,11 +86,10 @@ std::string BrowseForFolder2(HWND parent, std::string_view title, std::string_vi
 
 	// Set the initial directory
 	if (!initialDir.empty()) {
-		IShellItem* pShellItem = nullptr;
+		ComPtr<IShellItem> pShellItem;
 		hr = SHCreateItemFromParsingName(initialDir.c_str(), nullptr, IID_PPV_ARGS(&pShellItem));
 		if (SUCCEEDED(hr)) {
-			hr = pFileDialog->SetFolder(pShellItem);
-			pShellItem->Release();
+			hr = pFileDialog->SetFolder(pShellItem.Get());
 		}
 	}
 	pFileDialog->SetTitle(wtitle.c_str());
@@ -54,7 +98,7 @@ std::string BrowseForFolder2(HWND parent, std::string_view title, std::string_vi
 	hr = pFileDialog->Show(parent);
 	if (SUCCEEDED(hr)) {
 		// Get the selected folder
-		IShellItem* pShellItem = nullptr;
+		ComPtr<IShellItem> pShellItem;
 		hr = pFileDialog->GetResult(&pShellItem);
 		if (SUCCEEDED(hr)) {
 			PWSTR pszFilePath = nullptr;
@@ -63,71 +107,11 @@ std::string BrowseForFolder2(HWND parent, std::string_view title, std::string_vi
 				selectedFolder = pszFilePath;
 				CoTaskMemFree(pszFilePath);
 			}
-			pShellItem->Release();
 		}
 	}
 
-	pFileDialog->Release();
 	return ConvertWStringToUTF8(selectedFolder);
 }
-
-	static int CALLBACK BrowseFolderCallback(HWND hwnd, UINT uMsg, LPARAM lParam, LPARAM lpData) {
-		if (uMsg == BFFM_INITIALIZED) {
-			LPCTSTR path = reinterpret_cast<LPCTSTR>(lpData);
-			::SendMessage(hwnd, BFFM_SETSELECTION, true, (LPARAM)path);
-		}
-		return 0;
-	}
-
-	std::string BrowseForFolder(HWND parent, const wchar_t *title, std::string_view initialPath) {
-		BROWSEINFO info{};
-		info.hwndOwner = parent;
-		info.lpszTitle = title;
-		info.ulFlags = BIF_EDITBOX | BIF_RETURNONLYFSDIRS | BIF_USENEWUI | BIF_NEWDIALOGSTYLE;
-
-		std::wstring initialPathW;
-
-		if (!initialPath.empty()) {
-			initialPathW = ConvertUTF8ToWString(initialPath);
-			info.lParam = reinterpret_cast<LPARAM>(initialPathW.c_str());
-			info.lpfn = BrowseFolderCallback;
-		}
-
-		//info.pszDisplayName
-		auto idList = SHBrowseForFolder(&info);
-		HMODULE shell32 = GetModuleHandle(L"shell32.dll");
-		typedef BOOL (WINAPI *SHGetPathFromIDListEx_f)(PCIDLIST_ABSOLUTE pidl, PWSTR pszPath, DWORD cchPath, GPFIDL_FLAGS uOpts);
-		SHGetPathFromIDListEx_f SHGetPathFromIDListEx_ = nullptr;
-		if (shell32)
-			SHGetPathFromIDListEx_ = (SHGetPathFromIDListEx_f)GetProcAddress(shell32, "SHGetPathFromIDListEx");
-
-		std::string result;
-		if (SHGetPathFromIDListEx_) {
-			std::wstring temp;
-			do {
-				// Assume it's failing if it goes on too long.
-				if (temp.size() > 32768 * 10) {
-					temp.clear();
-					break;
-				}
-				temp.resize(temp.size() + MAX_PATH);
-			} while (SHGetPathFromIDListEx_(idList, &temp[0], (DWORD)temp.size(), GPFIDL_DEFAULT) == 0);
-			result = ConvertWStringToUTF8(temp);
-		} else {
-			wchar_t temp[MAX_PATH]{};
-			SHGetPathFromIDList(idList, temp);
-			result = ConvertWStringToUTF8(temp);
-		}
-
-		CoTaskMemFree(idList);
-		return result;
-	}
-
-	std::string BrowseForFolder(HWND parent, std::string_view title, std::string_view initialPath) {
-		std::wstring titleString = ConvertUTF8ToWString(title);
-		return BrowseForFolder(parent, titleString.c_str(), initialPath);
-	}
-
 
 	bool BrowseForFileName(bool _bLoad, HWND _hParent, const wchar_t *_pTitle,
 		const wchar_t *_pInitialFolder, const wchar_t *_pFilter, const wchar_t *_pExtension,
@@ -249,7 +233,7 @@ std::string BrowseForFolder2(HWND parent, std::string_view title, std::string_vi
 // http://msdn.microsoft.com/en-us/library/aa969393.aspx
 static HRESULT CreateLink(LPCWSTR lpszPathObj, LPCWSTR lpszArguments, LPCWSTR lpszPathLink, LPCWSTR lpszDesc, LPCWSTR lpszIcon, int iconIndex) {
 	HRESULT hres;
-	Microsoft::WRL::ComPtr<IShellLink> psl;
+	ComPtr<IShellLink> psl;
 	hres = CoInitializeEx(NULL, COINIT_MULTITHREADED);
 	if (FAILED(hres))
 		return hres;
@@ -258,7 +242,7 @@ static HRESULT CreateLink(LPCWSTR lpszPathObj, LPCWSTR lpszArguments, LPCWSTR lp
 	// has already been called.
 	hres = CoCreateInstance(__uuidof(ShellLink), NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&psl));
 	if (SUCCEEDED(hres) && psl) {
-		Microsoft::WRL::ComPtr<IPersistFile> ppf;
+		ComPtr<IPersistFile> ppf;
 
 		// Set the path to the shortcut target and add the description. 
 		psl->SetPath(lpszPathObj);

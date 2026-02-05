@@ -18,9 +18,11 @@ enum class DNSType {
 	IPV6 = 2,
 };
 
+bool HostPortExists(const std::string &host, int port, int timeout_ms);
+
 bool DNSResolve(const std::string &host, const std::string &service, addrinfo **res, std::string &error, DNSType type = DNSType::ANY);
 void DNSResolveFree(addrinfo *res);
-bool GetIPList(std::vector<std::string>& IP4s);
+bool GetLocalIP4List(std::vector<std::string>& IP4s);
 
 int inet_pton(int af, const char* src, void* dst);
 

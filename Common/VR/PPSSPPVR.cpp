@@ -14,8 +14,7 @@
 
 #include "Common/Math/lin/matrix4x4.h"
 
-#include "Common/Input/InputState.h"
-#include "Common/Input/KeyCodes.h"
+// The deps below need to be inverted, or we need to move this file (probably better)
 
 #include "Core/HLE/sceDisplay.h"
 #include "Core/HLE/sceCtrl.h"
@@ -150,9 +149,16 @@ void InitVROnAndroid(void* vm, void* activity, const char* system, int version, 
 	}
 
 	//Set platform flags
-	if (strcmp(vendor, "PICO") == 0) {
+	
+	if (strcmp(vendor, "PLAY FOR DREAM") == 0) {
+		VR_SetPlatformFLag(VR_PLATFORM_CONTROLLER_QUEST, true);
+		VR_SetPlatformFLag(VR_PLATFORM_EXTENSION_INSTANCE, true);
+		VR_SetPlatformFLag(VR_PLATFORM_EXTENSION_PERFORMANCE, true);
+		VR_SetConfigFloat(VR_CONFIG_VIEWPORT_SUPERSAMPLING, 1.0f);
+	} else if (strcmp(vendor, "PICO") == 0) {
 		VR_SetPlatformFLag(VR_PLATFORM_CONTROLLER_PICO, true);
 		VR_SetPlatformFLag(VR_PLATFORM_EXTENSION_INSTANCE, true);
+		VR_SetPlatformFLag(VR_PLATFORM_EXTENSION_PASSTHROUGH, true);
 		VR_SetConfigFloat(VR_CONFIG_VIEWPORT_SUPERSAMPLING, 1.0f);
 	} else {
 		VR_SetPlatformFLag(VR_PLATFORM_CONTROLLER_QUEST, true);
@@ -202,7 +208,7 @@ void SetVRAppMode(VRAppMode mode) {
 	appMode = mode;
 }
 
-void UpdateVRInput(bool haptics, float dp_scale) {
+void UpdateVRInput(bool haptics, float dp_xscale, float dp_yscale) {
 	//axis
 	if (pspKeys[(int)VIRTKEY_VR_CAMERA_ADJUST]) {
 		AxisInput axis[2] = {};
@@ -230,7 +236,7 @@ void UpdateVRInput(bool haptics, float dp_scale) {
 
 			//fill KeyInput structure
 			bool pressed = status & m.ovr;
-			keyInput.flags = pressed ? KEY_DOWN : KEY_UP;
+			keyInput.flags = pressed ? KeyInputFlags::DOWN : KeyInputFlags::UP;
 			keyInput.keyCode = m.keycode;
 			keyInput.deviceId = controllerIds[j];
 
@@ -244,7 +250,7 @@ void UpdateVRInput(bool haptics, float dp_scale) {
 				m.pressed = pressed;
 				m.repeat = 0;
 			} else if (pressed && (m.repeat > 30)) {
-				keyInput.flags |= KEY_IS_REPEAT;
+				keyInput.flags |= KeyInputFlags::IS_REPEAT;
 				cbNativeKey(keyInput);
 				m.repeat = 0;
 			} else {
@@ -319,16 +325,16 @@ void UpdateVRInput(bool haptics, float dp_scale) {
 		VR_SetConfig(VR_CONFIG_CANVAS_6DOF, g_Config.bEnable6DoF);
 
 		//inform engine about the status
-		TouchInput touch;
+		TouchInput touch{};
 		touch.id = mouseController;
-		touch.x = x * dp_scale;
-		touch.y = (height - y - 1) * dp_scale / VR_GetConfigFloat(VR_CONFIG_CANVAS_ASPECT);
+		touch.x = x * dp_xscale;
+		touch.y = (height - y - 1) * dp_yscale;
 		bool pressed = IN_VRGetButtonState(mouseController) & ovrButton_Trigger;
 		if (mousePressed != pressed) {
 			if (pressed) {
-				touch.flags = TOUCH_DOWN;
+				touch.flags = TouchInputFlags::DOWN;
 				cbNativeTouch(touch);
-				touch.flags = TOUCH_UP;
+				touch.flags = TouchInputFlags::UP;
 				cbNativeTouch(touch);
 			}
 			mousePressed = pressed;
@@ -339,10 +345,10 @@ void UpdateVRInput(bool haptics, float dp_scale) {
 		for (int j = 0; j < 2; j++) {
 			keyInput.deviceId = controllerIds[j];
 			float scroll = -IN_VRGetJoystickState(j).y;
-			keyInput.flags = scroll < -0.5f ? KEY_DOWN : KEY_UP;
+			keyInput.flags = scroll < -0.5f ? KeyInputFlags::DOWN : KeyInputFlags::UP;
 			keyInput.keyCode = NKCODE_EXT_MOUSEWHEEL_UP;
 			cbNativeKey(keyInput);
-			keyInput.flags = scroll > 0.5f ? KEY_DOWN : KEY_UP;
+			keyInput.flags = scroll > 0.5f ? KeyInputFlags::DOWN : KeyInputFlags::UP;
 			keyInput.keyCode = NKCODE_EXT_MOUSEWHEEL_DOWN;
 			cbNativeKey(keyInput);
 		}
@@ -369,7 +375,7 @@ bool UpdateVRKeys(const KeyInput &key) {
 	bool wasCameraAdjustOn = pspKeys[VIRTKEY_VR_CAMERA_ADJUST];
 	if (KeyMap::InputMappingToPspButton(InputMapping(key.deviceId, key.keyCode), &nativeKeys)) {
 		for (int& nativeKey : nativeKeys) {
-			pspKeys[nativeKey] = key.flags & KEY_DOWN;
+			pspKeys[nativeKey] = key.flags & KeyInputFlags::DOWN;
 		}
 	}
 
@@ -400,7 +406,7 @@ bool UpdateVRKeys(const KeyInput &key) {
 	if (!wasCameraAdjustOn && pspKeys[VIRTKEY_VR_CAMERA_ADJUST]) {
 		KeyInput keyUp;
 		keyUp.deviceId = key.deviceId;
-		keyUp.flags = KEY_UP;
+		keyUp.flags = KeyInputFlags::UP;
 
 		pspKeys[VIRTKEY_VR_CAMERA_ADJUST] = false;
 		for (auto& pspKey : pspKeys) {

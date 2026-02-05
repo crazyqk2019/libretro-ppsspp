@@ -102,9 +102,6 @@ enum VoiceType {
 // It compresses 28 16-bit samples into a block of 16 bytes.
 class VagDecoder {
 public:
-	VagDecoder() : data_(0), read_(0), end_(true) {
-		memset(samples, 0, sizeof(samples));
-	}
 	void Start(u32 dataPtr, u32 vagSize, bool loopEnabled);
 
 	void GetSamples(s16 *outSamples, int numSamples);
@@ -117,7 +114,7 @@ public:
 	u32 GetReadPtr() const { return read_; }
 
 private:
-	s16 samples[28];
+	s16 samples[28]{};
 	int curSample = 0;
 
 	u32 data_ = 0;
@@ -132,27 +129,27 @@ private:
 
 	bool loopEnabled_ = false;
 	bool loopAtNextBlock_ = false;
-	bool end_ = false;
+	bool end_ = true;
 };
 
 class SasAtrac3 {
 public:
-	SasAtrac3() : contextAddr_(0), atracID_(-1), sampleQueue_(0), end_(false) {}
-	~SasAtrac3() { delete sampleQueue_; }
-	int setContext(u32 context);
-	int id() const { return atracID_; }
-	void getNextSamples(s16 *outbuf, int wantedSamples);
-	int addStreamData(u32 bufPtr, u32 addbytes);
+	~SasAtrac3() { delete sampleQueue_; delete[] buf_; }
+	int AtracID() const { return atracID_; }  // for the debugger
+	int SetContext(u32 context);
+	void GetNextSamples(s16 *outbuf, int wantedSamples);
+	int Concatenate(u32 bufPtr, u32 addbytes);
 	void DoState(PointerWrap &p);
 	bool End() const {
 		return end_;
 	}
 
 private:
-	u32 contextAddr_;
-	int atracID_;
-	BufferQueue *sampleQueue_;
-	bool end_;
+	u32 contextAddr_ = 0;
+	int atracID_ = -1;
+	BufferQueue *sampleQueue_ = nullptr;
+	bool end_ = false;
+	s16 *buf_ = nullptr;
 };
 
 class ADSREnvelope {
@@ -315,7 +312,7 @@ public:
 
 	FILE *audioDump = nullptr;
 
-	void Mix(u32 outAddr, u32 inAddr = 0, int leftVol = 0, int rightVol = 0);
+	void Mix(u32 outAddr, u32 inAddr, int leftVol, int rightVol, bool mute);
 	void MixVoice(SasVoice &voice);
 
 	// Applies reverb to send buffer, according to waveformEffect.

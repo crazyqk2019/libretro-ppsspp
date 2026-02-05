@@ -1,5 +1,4 @@
 #include <cmath>
-#include <tchar.h>
 
 #include "Common/System/Display.h"
 #include "Common/Data/Encoding/Utf8.h"
@@ -21,7 +20,7 @@
 
 enum { REGISTER_PC = 32, REGISTER_HI, REGISTER_LO, REGISTERS_END };
 
-TCHAR CtrlRegisterList::szClassName[] = _T("CtrlRegisterList");
+constexpr wchar_t *szClassName = L"CtrlRegisterList";
 
 static constexpr UINT_PTR IDT_REDRAW = 0xC0DE0001;
 static constexpr UINT REDRAW_DELAY = 1000 / 60;
@@ -131,7 +130,7 @@ CtrlRegisterList::CtrlRegisterList(HWND _wnd)
 	: wnd(_wnd) {
 	SetWindowLongPtr(wnd, GWLP_USERDATA, (LONG_PTR)this);
 
-	const float fontScale = 1.0f / g_display.dpi_scale_real;
+	const float fontScale = 1.0f / g_display.dpi_scale_real_y;
 	rowHeight = g_Config.iFontHeight * fontScale;
 	int charWidth = g_Config.iFontWidth * fontScale;
 	font = CreateFont(rowHeight, charWidth, 0, 0,

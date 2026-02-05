@@ -24,6 +24,7 @@ class I18NRepo;
 class IniFile;
 class Section;
 
+// Don't forget to update the string array in the cpp file if you change this.
 enum class I18NCat : uint8_t {
 	AUDIO = 0,
 	CONTROLS,
@@ -55,7 +56,6 @@ enum class I18NCat : uint8_t {
 	TEXTURESHADERS,
 	THEMES,
 	UI_ELEMENTS,
-	UPGRADE,
 	VR,
 	ACHIEVEMENTS,
 	PSPSETTINGS,
@@ -81,7 +81,7 @@ public:
 	// Try to avoid this. Still useful in snprintf.
 	const char *T_cstr(const char *key, const char *def = nullptr);
 
-	std::map<std::string, std::string> Missed() const;
+	std::map<std::string, std::string, std::less<>> Missed() const;
 
 	const std::map<std::string, I18NEntry, std::less<>> &GetMap() { return map_; }
 	void ClearMissed() { missedKeyLog_.clear(); }
@@ -94,8 +94,9 @@ private:
 	// std::less<> is needed to be able to look up string_views in a string-keyed map.
 	std::map<std::string, I18NEntry, std::less<>> map_;
 	mutable std::mutex missedKeyLock_;
-	std::map<std::string, std::string> missedKeyLog_;
+	std::map<std::string, std::string, std::less<>> missedKeyLog_;
 
+	std::string name_;
 	// Noone else can create these.
 	friend class I18NRepo;
 };

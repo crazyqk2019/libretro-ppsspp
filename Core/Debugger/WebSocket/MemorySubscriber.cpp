@@ -61,9 +61,13 @@ struct AutoDisabledReplacements {
 // Important: Only use keepReplacements when reading, not writing.
 static AutoDisabledReplacements LockMemoryAndCPU(uint32_t addr, bool keepReplacements) {
 	AutoDisabledReplacements result;
+	CoreState state = coreState;
 	if (Core_IsStepping()) {
 		result.wasStepping = true;
 	} else {
+		while (state != CoreState::CORE_RUNNING_CPU) {
+			state = coreState;
+		}
 		Core_Break(BreakReason::MemoryAccess, addr);
 		Core_WaitInactive();
 	}
@@ -257,7 +261,7 @@ void WebSocketMemoryReadString(DebuggerRequest &req) {
 
 	// Let's try to avoid crashing and get a safe length.
 	const uint8_t *p = Memory::GetPointerUnchecked(addr);
-	size_t longest = Memory::ValidSize(addr, Memory::g_MemorySize);
+	size_t longest = Memory::ClampValidSizeAt(addr, Memory::g_MemorySize);
 	size_t len = strnlen((const char *)p, longest);
 
 	JsonWriter &json = req.Respond();

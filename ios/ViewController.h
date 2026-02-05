@@ -2,15 +2,15 @@
 
 #import <UIKit/UIKit.h>
 #import <GLKit/GLKit.h>
-#import <GameController/GameController.h>
 
 #import "iCade/iCadeReaderView.h"
-#import "CameraHelper.h"
 #import "LocationHelper.h"
 
-#include "ViewControllerCommon.h"
+#import "ViewControllerCommon.h"
 
-@interface PPSSPPViewControllerGL : GLKViewController <
-    iCadeEventDelegate, LocationHandlerDelegate, CameraFrameDelegate,
-    UIGestureRecognizerDelegate, UIKeyInput, PPSSPPViewController>
+@interface PPSSPPViewControllerGL : PPSSPPBaseViewController<GLKViewDelegate>
+
+// Public-ish control similar to GLKViewController
+@property (nonatomic, assign) NSInteger preferredFramesPerSecond; // default 60
+
 @end

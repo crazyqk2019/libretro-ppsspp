@@ -8,6 +8,7 @@
 #include "Common/GPU/thin3d_create.h"
 #include "Common/GPU/Vulkan/VulkanRenderManager.h"
 #include "Common/Data/Text/Parsers.h"
+#include "GPU/Vulkan/VulkanUtil.h"
 
 #include "Core/System.h"
 #if PPSSPP_PLATFORM(MAC)
@@ -26,20 +27,6 @@ static const bool g_Validate = true;
 #else
 static const bool g_Validate = false;
 #endif
-
-// TODO: Share this between backends.
-static uint32_t FlagsFromConfig() {
-	uint32_t flags;
-	if (g_Config.bVSync) {
-		flags = VULKAN_FLAG_PRESENT_FIFO;
-	} else {
-		flags = VULKAN_FLAG_PRESENT_MAILBOX | VULKAN_FLAG_PRESENT_IMMEDIATE;
-	}
-	if (g_Validate) {
-		flags |= VULKAN_FLAG_VALIDATE;
-	}
-	return flags;
-}
 
 bool SDLVulkanGraphicsContext::Init(SDL_Window *&window, int x, int y, int w, int h, int mode, std::string *error_message) {
 	window = SDL_CreateWindow("Initializing Vulkan...", x, y, w, h, mode);
@@ -64,12 +51,9 @@ bool SDLVulkanGraphicsContext::Init(SDL_Window *&window, int x, int y, int w, in
 	}
 
 	vulkan_ = new VulkanContext();
-	int vulkanFlags = FlagsFromConfig();
 
 	VulkanContext::CreateInfo info{};
-	info.app_name = "PPSSPP";
-	info.app_ver = gitVer.ToInteger();
-	info.flags = vulkanFlags;
+	InitVulkanCreateInfoFromConfig(&info);
 	if (VK_SUCCESS != vulkan_->CreateInstance(info)) {
 		*error_message = vulkan_->InitError();
 		delete vulkan_;
@@ -144,17 +128,19 @@ bool SDLVulkanGraphicsContext::Init(SDL_Window *&window, int x, int y, int w, in
 		break;
 	}
 
-	if (!vulkan_->InitSwapchain()) {
-		*error_message = vulkan_->InitError();
-		Shutdown();
-		return false;
-	}
-
 	bool useMultiThreading = g_Config.bRenderMultiThreading;
 	if (g_Config.iInflightFrames == 1) {
 		useMultiThreading = false;
 	}
 	draw_ = Draw::T3DCreateVulkanContext(vulkan_, useMultiThreading);
+
+	VkPresentModeKHR presentMode = ConfigPresentModeToVulkan(draw_);
+	if (!vulkan_->InitSwapchain(presentMode)) {
+		*error_message = vulkan_->InitError();
+		Shutdown();
+		return false;
+	}
+
 	SetGPUBackend(GPUBackend::VULKAN);
 	bool success = draw_->CreatePresets();
 	_assert_(success);
@@ -182,9 +168,11 @@ void SDLVulkanGraphicsContext::Shutdown() {
 
 void SDLVulkanGraphicsContext::Resize() {
 	draw_->HandleEvent(Draw::Event::LOST_BACKBUFFER, vulkan_->GetBackbufferWidth(), vulkan_->GetBackbufferHeight());
+	// NOTE: Removing DestroySwapchain here causes a double re-create on MacOS with MoltenVK, for some reason.
+	// It's like passing on oldSwapchain doesn't really work as expected.
 	vulkan_->DestroySwapchain();
-	vulkan_->UpdateFlags(FlagsFromConfig());
-	vulkan_->InitSwapchain();
+	VkPresentModeKHR presentMode = ConfigPresentModeToVulkan(draw_);
+	vulkan_->InitSwapchain(presentMode);
 	draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER, vulkan_->GetBackbufferWidth(), vulkan_->GetBackbufferHeight());
 }
 

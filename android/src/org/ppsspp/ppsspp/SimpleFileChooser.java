@@ -4,11 +4,14 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.os.Environment;
+import android.widget.Toast;
+
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
 /** Simple dialog to pick file. */
 public class SimpleFileChooser {
@@ -16,7 +19,7 @@ public class SimpleFileChooser {
 		void onFileSelected(File file);
 	}
 
-	private FileSelectedListener mFileListener;
+	private final FileSelectedListener mFileListener;
 
 	private final Activity mActivity;
 	private static final String PARENT_DIR = "..";
@@ -42,7 +45,7 @@ public class SimpleFileChooser {
 	// Create list of files and directories.
 	private void rebuildFileList(File path) {
 		this.mCurrentPath = path;
-		List<String> r = new ArrayList<String>();
+		List<String> r = new ArrayList<>();
 
 		if (path.getParentFile() != null)
 			r.add(PARENT_DIR);
@@ -53,8 +56,12 @@ public class SimpleFileChooser {
 			for (File file : fileList) {
 				r.add(file.getName());
 			}
+		} else {
+			// BUG FIX: Notify user if directory is inaccessible
+			Toast.makeText(mActivity, "Cannot read directory", Toast.LENGTH_SHORT).show();
 		}
-		mFileList = (String[]) r.toArray(new String[0]);
+		// Strange syntax but correct.
+		mFileList = r.toArray(new String[0]);
 	}
 
 	// Get selected file, dir, or parent dir.
@@ -67,7 +74,7 @@ public class SimpleFileChooser {
 
 	// Comparator for Arrays.sort(). Separate folders from files, order
 	// alphabetically, ignore case.
-	private Comparator<File> fileArrayComparator = new Comparator<File>() {
+	private final Comparator<File> fileArrayComparator = new Comparator<>() {
 		public int compare(File file1, File file2) {
 			if (file1 == null || file2 == null) // if either null, assume equal
 				return 0;
@@ -78,12 +85,12 @@ public class SimpleFileChooser {
 				return 1;
 			else
 				// when both are folders or both are files, sort by name
-				return file1.getName().toUpperCase().compareTo(file2.getName().toUpperCase());
+				return file1.getName().toUpperCase(Locale.ROOT).compareTo(file2.getName().toUpperCase(Locale.ROOT));
 		}
 	};
 
 	// Event when user click item on dialog
-	private DialogInterface.OnClickListener onDialogItemClickedListener = new DialogInterface.OnClickListener() {
+	private final DialogInterface.OnClickListener onDialogItemClickedListener = new DialogInterface.OnClickListener() {
 		public void onClick(DialogInterface dialog, int which) {
 			String selectedFileName = mFileList[which];
 			File selectedFile = getSelectedFile(selectedFileName);

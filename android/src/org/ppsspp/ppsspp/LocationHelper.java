@@ -13,6 +13,9 @@ import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.RequiresApi;
+
 import java.util.Iterator;
 
 class LocationHelper implements LocationListener {
@@ -20,7 +23,7 @@ class LocationHelper implements LocationListener {
 	private static final int GPGGA_ID_INDEX = 0;
 	private static final int GPGGA_HDOP_INDEX = 8;
 	private static final int GPGGA_ALTITUDE_INDEX = 9;
-	private LocationManager mLocationManager;
+	private final LocationManager mLocationManager;
 	private boolean mLocationEnable;
 	private GpsStatus.Listener mGpsStatusListener;
 	private GnssStatus.Callback mGnssStatusCallback;
@@ -34,6 +37,7 @@ class LocationHelper implements LocationListener {
 		mLocationEnable = false;
 	}
 
+	@SuppressWarnings("deprecation")
 	void startLocationUpdates() {
 		Log.d(TAG, "startLocationUpdates");
 		if (!mLocationEnable) {
@@ -47,7 +51,7 @@ class LocationHelper implements LocationListener {
 				if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
 					mGnssStatusCallback = new GnssStatus.Callback() {
 						@Override
-						public void onSatelliteStatusChanged(GnssStatus status) {
+						public void onSatelliteStatusChanged(@NonNull GnssStatus status) {
 							onSatelliteStatus(status);
 						}
 					};
@@ -60,12 +64,7 @@ class LocationHelper implements LocationListener {
 					};
 					mLocationManager.addNmeaListener(mNmeaMessageListener);
 				} else {
-					mGpsStatusListener = new GpsStatus.Listener() {
-						@Override
-						public void onGpsStatusChanged(int event) {
-							onGpsStatus(event);
-						}
-					};
+					mGpsStatusListener = this::onGpsStatus;
 					mLocationManager.addGpsStatusListener(mGpsStatusListener);
 					mNmeaListener = new GpsStatus.NmeaListener() {
 						@Override
@@ -77,7 +76,7 @@ class LocationHelper implements LocationListener {
 				}
 				mLocationEnable = true;
 			} catch (SecurityException e) {
-				Log.e(TAG, "Cannot start location updates: " + e.toString());
+				Log.e(TAG, "Cannot start location updates: " + e);
 			}
 			if (!isGPSEnabled && !isNetworkEnabled) {
 				Log.i(TAG, "No location provider found");
@@ -86,6 +85,7 @@ class LocationHelper implements LocationListener {
 		}
 	}
 
+	@SuppressWarnings("deprecation")
 	void stopLocationUpdates() {
 		Log.d(TAG, "stopLocationUpdates");
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -134,16 +134,14 @@ class LocationHelper implements LocationListener {
 	}
 
 	@Override
-	public void onProviderEnabled(String provider) {
+	public void onProviderEnabled(@NonNull String provider) {
 	}
 
 	@Override
-	public void onProviderDisabled(String provider) {
+	public void onProviderDisabled(@NonNull String provider) {
 	}
 
-
-
-	@TargetApi(Build.VERSION_CODES.N)
+	@RequiresApi(Build.VERSION_CODES.N)
 	private void onSatelliteStatus(GnssStatus status) {
 		short index = 0;
 		for (short i = 0; i < status.getSatelliteCount(); i++) {
@@ -159,6 +157,7 @@ class LocationHelper implements LocationListener {
 		}
 	}
 
+	@SuppressWarnings("deprecation")
 	private void onGpsStatus(int event) {
 		switch (event) {
 			case GpsStatus.GPS_EVENT_STARTED:
@@ -168,11 +167,11 @@ class LocationHelper implements LocationListener {
 			case GpsStatus.GPS_EVENT_SATELLITE_STATUS: {
 				try {
 					GpsStatus gpsStatus = mLocationManager.getGpsStatus(null);
+					if (gpsStatus == null) return;
 					Iterable<GpsSatellite> satellites = gpsStatus.getSatellites();
 
 					short index = 0;
-					for (Iterator<GpsSatellite> iterator = satellites.iterator(); iterator.hasNext(); ) {
-						GpsSatellite satellite = iterator.next();
+					for (GpsSatellite satellite : satellites) {
 						if (satellite.getPrn() > 37) {
 							continue;
 						}
@@ -197,10 +196,18 @@ class LocationHelper implements LocationListener {
 			return;
 		}
 		if (!tokens[GPGGA_HDOP_INDEX].isEmpty()) {
-			mHdop = Float.valueOf(tokens[GPGGA_HDOP_INDEX]);
+			try {
+				mHdop = Float.parseFloat(tokens[GPGGA_HDOP_INDEX]);
+			} catch (NumberFormatException e) {
+				// Ignore
+			}
 		}
 		if (!tokens[GPGGA_ALTITUDE_INDEX].isEmpty()) {
-			mAltitudeAboveSeaLevel = Float.valueOf(tokens[GPGGA_ALTITUDE_INDEX]);
+			try {
+				mAltitudeAboveSeaLevel = Float.parseFloat(tokens[GPGGA_ALTITUDE_INDEX]);
+			} catch (NumberFormatException e) {
+				// Ignore
+			}
 		}
 	}
 }

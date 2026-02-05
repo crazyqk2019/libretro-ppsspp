@@ -22,9 +22,7 @@
 #include "Common/GPU/thin3d.h"
 #include "Common/UI/AsyncImageFileView.h"
 #include "Common/UI/Context.h"
-#include "UI/PauseScreen.h"
-#include "UI/ReportScreen.h"
-
+#include "Common/UI/ScrollView.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/File/FileUtil.h"
 #include "Common/Log.h"
@@ -36,16 +34,16 @@
 #include "Core/Reporting.h"
 #include "Core/Screenshot.h"
 #include "Core/System.h"
+#include "UI/PauseScreen.h"
+#include "UI/ReportScreen.h"
 
-using namespace UI;
-
-class RatingChoice : public LinearLayout {
+class RatingChoice : public UI::LinearLayout {
 public:
-	RatingChoice(std::string_view captionKey, int *value, LayoutParams *layoutParams = 0);
+	RatingChoice(std::string_view captionKey, int *value, UI::LayoutParams *layoutParams = 0);
 
 	RatingChoice *SetEnabledPtrs(bool *enabled);
 
-	Event OnChoice;
+	UI::Event OnChoice;
 
 protected:
 	void Update() override;
@@ -55,25 +53,25 @@ protected:
 		return 3;
 	}
 	void AddChoice(int i, std::string_view title);
-	StickyChoice *GetChoice(int i) {
-		return static_cast<StickyChoice *>(group_->GetViewByIndex(i));
+	UI::StickyChoice *GetChoice(int i) {
+		return static_cast<UI::StickyChoice *>(group_->GetViewByIndex(i));
 	}
 
 	LinearLayout *group_;
 
 private:
-	EventReturn OnChoiceClick(EventParams &e);
+	void OnChoiceClick(UI::EventParams &e);
 
 	int *value_;
 };
 
-RatingChoice::RatingChoice(std::string_view captionKey, int *value, LayoutParams *layoutParams)
+RatingChoice::RatingChoice(std::string_view captionKey, int *value, UI::LayoutParams *layoutParams)
 		: LinearLayout(ORIENT_VERTICAL, layoutParams), value_(value) {
 	SetSpacing(0.0f);
 
 	auto rp = GetI18NCategory(I18NCat::REPORTING);
 	group_ = new LinearLayout(ORIENT_HORIZONTAL);
-	Add(new TextView(rp->T(captionKey), FLAG_WRAP_TEXT, false))->SetShadow(true);
+	Add(new UI::TextView(rp->T(captionKey), FLAG_WRAP_TEXT, false))->SetShadow(true);
 	Add(group_);
 
 	group_->SetSpacing(0.0f);
@@ -84,7 +82,7 @@ void RatingChoice::Update() {
 	LinearLayout::Update();
 
 	for (int i = 0; i < TotalChoices(); i++) {
-		StickyChoice *chosen = GetChoice(i);
+		UI::StickyChoice *chosen = GetChoice(i);
 		bool down = chosen->IsDown();
 		if (down && *value_ != i) {
 			chosen->Release();
@@ -110,15 +108,15 @@ void RatingChoice::SetupChoices() {
 }
 
 void RatingChoice::AddChoice(int i, std::string_view title) {
-	auto c = group_->Add(new StickyChoice(title, ""));
+	auto c = group_->Add(new UI::StickyChoice(title, ""));
 	c->OnClick.Handle(this, &RatingChoice::OnChoiceClick);
 }
 
-EventReturn RatingChoice::OnChoiceClick(EventParams &e) {
+void RatingChoice::OnChoiceClick(UI::EventParams &e) {
 	// Unstick the other choices that weren't clicked.
 	int total = TotalChoices();
 	for (int i = 0; i < total; i++) {
-		StickyChoice *v = GetChoice(i);
+		UI::StickyChoice *v = GetChoice(i);
 		if (v != e.v) {
 			v->Release();
 		} else {
@@ -126,17 +124,16 @@ EventReturn RatingChoice::OnChoiceClick(EventParams &e) {
 		}
 	}
 
-	EventParams e2{};
+	UI::EventParams e2{};
 	e2.v = e.v;
 	e2.a = *value_;
 	// Dispatch immediately (we're already on the UI thread as we're in an event handler).
 	OnChoice.Dispatch(e2);
-	return EVENT_DONE;
 }
 
 class CompatRatingChoice : public RatingChoice {
 public:
-	CompatRatingChoice(const char *captionKey, int *value, LayoutParams *layoutParams = 0);
+	CompatRatingChoice(const char *captionKey, int *value, UI::LayoutParams *layoutParams = 0);
 
 protected:
 	void SetupChoices() override;
@@ -145,7 +142,7 @@ protected:
 	}
 };
 
-CompatRatingChoice::CompatRatingChoice(const char *captionKey, int *value, LayoutParams *layoutParams)
+CompatRatingChoice::CompatRatingChoice(const char *captionKey, int *value, UI::LayoutParams *layoutParams)
 		: RatingChoice(captionKey, value, layoutParams) {
 	CompatRatingChoice::SetupChoices();
 }
@@ -161,7 +158,7 @@ void CompatRatingChoice::SetupChoices() {
 }
 
 ReportScreen::ReportScreen(const Path &gamePath)
-	: UIDialogScreen(), gamePath_(gamePath) {
+	: UITwoPaneBaseDialogScreen(gamePath, TwoPaneFlags::SettingsToTheRight) {
 	enableReporting_ = Reporting::IsEnabled();
 	ratingEnabled_ = enableReporting_;
 	// Start computing a CRC immediately, we'll need it on submit.
@@ -182,34 +179,43 @@ ScreenRenderFlags ReportScreen::render(ScreenRenderMode mode) {
 				File::CreateDir(path);
 			}
 			screenshotFilename_ = path / ".reporting.jpg";
-			if (TakeGameScreenshot(screenManager()->getDrawContext(), screenshotFilename_, ScreenshotFormat::JPG, SCREENSHOT_DISPLAY, nullptr, nullptr, 4)) {
-				// Redo the views already, now with a screenshot included.
-				RecreateViews();
-			} else {
-				// Good news (?), the views are good as-is without a screenshot.
-				screenshotFilename_.clear();
-			}
+			ScreenshotResult ignored = TakeGameScreenshot(screenManager()->getDrawContext(), screenshotFilename_, ScreenshotFormat::JPG, SCREENSHOT_RENDER, 4, [this](bool success) {
+				if (success) {
+					// Redo the views already, now with a screenshot included.
+					RecreateViews();
+				} else {
+					// Good news (?), the views are good as-is without a screenshot.
+					screenshotFilename_.clear();
+				}
+			});
 			tookScreenshot_ = true;
 		}
 	}
 
 	// We take the screenshot first, then we start rendering.
 	// We are the only screen visible so this avoid starting and then trying to resume a backbuffer render pass.
-	ScreenRenderFlags flags = UIScreen::render(mode);
+	return UITwoPaneBaseDialogScreen::render(mode);
+}
 
-	return flags;
+// For the screenshotting functionality to work.
+ScreenRenderRole ReportScreen::renderRole(bool isTop) const {
+	// if (tookScreenshot_) {
+	// 	return ScreenRenderRole::NONE;
+	// }
+	return ScreenRenderRole::MUST_BE_FIRST | ScreenRenderRole::CAN_BE_BACKGROUND;
 }
 
 void ReportScreen::update() {
 	if (screenshot_) {
 		if (includeScreenshot_) {
-			screenshot_->SetVisibility(V_VISIBLE);
+			screenshot_->SetVisibility(UI::V_VISIBLE);
 		} else {
-			screenshot_->SetVisibility(V_GONE);
+			screenshot_->SetVisibility(UI::V_GONE);
 		}
 	}
 	UIDialogScreen::update();
 	UpdateCRCInfo();
+	UpdateSubmit();
 }
 
 void ReportScreen::resized() {
@@ -217,7 +223,7 @@ void ReportScreen::resized() {
 	RecreateViews();
 }
 
-EventReturn ReportScreen::HandleChoice(EventParams &e) {
+void ReportScreen::HandleChoice(UI::EventParams &e) {
 	if (overall_ == ReportingOverallScore::NONE) {
 		graphics_ = 0;
 		speed_ = 0;
@@ -242,10 +248,9 @@ EventReturn ReportScreen::HandleChoice(EventParams &e) {
 
 	UpdateSubmit();
 	UpdateOverallDescription();
-	return EVENT_DONE;
 }
 
-EventReturn ReportScreen::HandleReportingChange(EventParams &e) {
+void ReportScreen::HandleReportingChange(UI::EventParams &e) {
 	if (overall_ == ReportingOverallScore::NONE) {
 		ratingEnabled_ = false;
 	} else {
@@ -255,22 +260,37 @@ EventReturn ReportScreen::HandleReportingChange(EventParams &e) {
 		reportingNotice_->SetTextColor(enableReporting_ ? 0xFFFFFFFF : 0xFF3030FF);
 	}
 	UpdateSubmit();
-	return EVENT_DONE;
 }
 
-void ReportScreen::CreateViews() {
+void ReportScreen::CreateSettingsViews(UI::ViewGroup *rightColumnItems) {
+	using namespace UI;
+
 	auto rp = GetI18NCategory(I18NCat::REPORTING);
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 
-	Margins actionMenuMargins(0, 20, 15, 0);
-	Margins contentMargins(0, 20, 5, 5);
-	float leftColumnWidth = g_display.dp_xres - actionMenuMargins.horiz() - contentMargins.horiz() - 300.0f;
-	ViewGroup *leftColumn = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(WRAP_CONTENT, FILL_PARENT, 0.4f, contentMargins));
-	LinearLayout *leftColumnItems = new LinearLayout(ORIENT_VERTICAL, new LayoutParams(WRAP_CONTENT, FILL_PARENT));
-	ViewGroup *rightColumn = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(300, FILL_PARENT, actionMenuMargins));
-	LinearLayout *rightColumnItems = new LinearLayout(ORIENT_VERTICAL);
+	rightColumnItems->Add(new Choice(rp->T("Open Browser"), ImageID("I_LINK_OUT")))->OnClick.Handle(this, &ReportScreen::HandleBrowser);
+	submit_ = new Choice(rp->T("Submit Feedback"), ImageID("I_CHECKMARK"));
+	rightColumnItems->Add(submit_)->OnClick.Handle(this, &ReportScreen::HandleSubmit);
+	submit_->SetEnabled(false); // Waiting for CRC
 
-	leftColumnItems->Add(new TextView(rp->T("FeedbackDesc", "How's the emulation?  Let us and the community know!"), FLAG_WRAP_TEXT, false, new LinearLayoutParams(Margins(12, 5, 0, 5))))->SetShadow(true);
+	UpdateSubmit();
+}
+
+void ReportScreen::CreateContentViews(UI::ViewGroup *parent) {
+	using namespace UI;
+
+	UI::ScrollView *scroll = new UI::ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(1.0f));
+	UI::LinearLayout *leftColumnItems = new UI::LinearLayout(ORIENT_VERTICAL, new UI::LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT));
+
+	scroll->Add(leftColumnItems);
+	parent->Add(scroll);
+
+	auto rp = GetI18NCategory(I18NCat::REPORTING);
+	auto di = GetI18NCategory(I18NCat::DIALOG);
+
+	bool portrait = GetDeviceOrientation() == DeviceOrientation::Portrait;
+
+	leftColumnItems->Add(new TextView(rp->T("FeedbackDesc", "How's the emulation? Let us and the community know!"), FLAG_WRAP_TEXT, false, new LinearLayoutParams(Margins(12, 5, 0, 5))))->SetShadow(true);
 	if (!Reporting::IsEnabled()) {
 		auto sy = GetI18NCategory(I18NCat::SYSTEM);
 		reportingNotice_ = leftColumnItems->Add(new TextView(rp->T("FeedbackDisabled", "Compatibility server reports must be enabled."), FLAG_WRAP_TEXT, false, new LinearLayoutParams(Margins(12, 5, 0, 5))));
@@ -311,36 +331,29 @@ void ReportScreen::CreateViews() {
 	overallDescription_ = leftColumnItems->Add(new TextView("", FLAG_WRAP_TEXT, false, new LinearLayoutParams(Margins(10, 0))));
 	overallDescription_->SetShadow(true);
 
-	UI::Orientation ratingsOrient = leftColumnWidth >= 750.0f ? ORIENT_HORIZONTAL : ORIENT_VERTICAL;
-	UI::LinearLayout *ratingsHolder = new LinearLayoutList(ratingsOrient, new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT));
+	LinearLayout *ratingsHolder = new LinearLayoutList(ORIENT_VERTICAL, new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT));
 	leftColumnItems->Add(ratingsHolder);
 	ratingsHolder->Add(new RatingChoice("Graphics", &graphics_))->SetEnabledPtrs(&ratingEnabled_)->OnChoice.Handle(this, &ReportScreen::HandleChoice);
 	ratingsHolder->Add(new RatingChoice("Speed", &speed_))->SetEnabledPtrs(&ratingEnabled_)->OnChoice.Handle(this, &ReportScreen::HandleChoice);
 	ratingsHolder->Add(new RatingChoice("Gameplay", &gameplay_))->SetEnabledPtrs(&ratingEnabled_)->OnChoice.Handle(this, &ReportScreen::HandleChoice);
 
-	rightColumnItems->SetSpacing(0.0f);
-	rightColumnItems->Add(new Choice(rp->T("Open Browser")))->OnClick.Handle(this, &ReportScreen::HandleBrowser);
-	submit_ = new Choice(rp->T("Submit Feedback"));
-	rightColumnItems->Add(submit_)->OnClick.Handle(this, &ReportScreen::HandleSubmit);
-	submit_->SetEnabled(false); // Waiting for CRC
-	UpdateSubmit();
-	UpdateOverallDescription();
-
-	rightColumnItems->Add(new Spacer(25.0));
-	rightColumnItems->Add(new Choice(di->T("Back"), "", false, new AnchorLayoutParams(150, WRAP_CONTENT, 10, NONE, NONE, 10)))->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
-
-	root_ = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT, 1.0f));
-	root_->Add(leftColumn);
-	root_->Add(rightColumn);
-
-	leftColumn->Add(leftColumnItems);
-	rightColumn->Add(rightColumnItems);
-
 	UpdateCRCInfo();
+	UpdateOverallDescription();
 }
 
 void ReportScreen::UpdateSubmit() {
-	submit_->SetEnabled(enableReporting_ && overall_ != ReportingOverallScore::INVALID && graphics_ >= 0 && speed_ >= 0 && gameplay_ >= 0);
+	submit_->SetEnabled(Reporting::HasCRC(gamePath_) && enableReporting_ && overall_ != ReportingOverallScore::INVALID && graphics_ >= 0 && speed_ >= 0 && gameplay_ >= 0);
+}
+
+std::string_view ReportScreen::GetTitle() const {
+	if (titleCache_.empty()) {
+		titleCache_ = g_paramSFO.GetValueString("TITLE");
+		if (titleCache_.empty()) {
+			auto rp = GetI18NCategory(I18NCat::REPORTING);
+			titleCache_ = rp->T("Submit Feedback");
+		}
+	}
+	return titleCache_;
 }
 
 void ReportScreen::UpdateCRCInfo() {
@@ -350,14 +363,13 @@ void ReportScreen::UpdateCRCInfo() {
 	if (Reporting::HasCRC(gamePath_)) {
 		std::string crc = StringFromFormat("%08X", Reporting::RetrieveCRC(gamePath_));
 		updated = ApplySafeSubstitutions(rp->T("FeedbackCRCValue", "Disc CRC: %1"), crc);
-		submit_->SetEnabled(true);
 	} else {
 		updated = rp->T("FeedbackCRCCalculating", "Disc CRC: Calculating...");
 	}
 
 	if (!updated.empty()) {
 		crcInfo_->SetText(updated);
-		crcInfo_->SetVisibility(V_VISIBLE);
+		crcInfo_->SetVisibility(UI::V_VISIBLE);
 	}
 }
 
@@ -378,7 +390,7 @@ void ReportScreen::UpdateOverallDescription() {
 	overallDescription_->SetTextColor(c);
 }
 
-EventReturn ReportScreen::HandleSubmit(EventParams &e) {
+void ReportScreen::HandleSubmit(UI::EventParams &e) {
 	const char *compat;
 	switch (overall_) {
 	case ReportingOverallScore::PERFECT: compat = "perfect"; break;
@@ -398,52 +410,41 @@ EventReturn ReportScreen::HandleSubmit(EventParams &e) {
 	Reporting::ReportCompatibility(compat, graphics_ + 1, speed_ + 1, gameplay_ + 1, filename);
 	TriggerFinish(DR_OK);
 	screenManager()->push(new ReportFinishScreen(gamePath_, overall_));
-	return EVENT_DONE;
 }
 
-EventReturn ReportScreen::HandleBrowser(EventParams &e) {
+void ReportScreen::HandleBrowser(UI::EventParams &e) {
 	const std::string url = "https://" + Reporting::ServerHost() + "/";
 	System_LaunchUrl(LaunchUrlType::BROWSER_URL, url.c_str());
-	return EVENT_DONE;
 }
 
 ReportFinishScreen::ReportFinishScreen(const Path &gamePath, ReportingOverallScore score)
-	: UIDialogScreen(), gamePath_(gamePath), score_(score) {
+	: UISimpleBaseDialogScreen(Path(), SimpleDialogFlags::ContentsCanScroll), gamePath_(gamePath), score_(score) {
 }
 
-void ReportFinishScreen::CreateViews() {
+std::string_view ReportFinishScreen::GetTitle() const {
+	auto rp = GetI18NCategory(I18NCat::REPORTING);
+	return rp->T("Submit Feedback");
+}
+
+void ReportFinishScreen::CreateDialogViews(UI::ViewGroup *parent) {
 	auto rp = GetI18NCategory(I18NCat::REPORTING);
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 
-	Margins actionMenuMargins(0, 20, 15, 0);
-	Margins contentMargins(0, 20, 5, 5);
-	ViewGroup *leftColumn = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(WRAP_CONTENT, FILL_PARENT, 0.4f, contentMargins));
-	LinearLayout *leftColumnItems = new LinearLayout(ORIENT_VERTICAL, new LayoutParams(WRAP_CONTENT, FILL_PARENT));
-	ViewGroup *rightColumn = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(300, FILL_PARENT, actionMenuMargins));
-	LinearLayout *rightColumnItems = new LinearLayout(ORIENT_VERTICAL);
+	using namespace UI;
 
-	leftColumnItems->Add(new TextView(rp->T("FeedbackThanks", "Thanks for your feedback."), FLAG_WRAP_TEXT, false, new LinearLayoutParams(Margins(12, 5, 0, 5))))->SetShadow(true);
+	parent->Add(new TextView(rp->T("FeedbackThanks", "Thanks for your feedback."), FLAG_WRAP_TEXT, false, new LinearLayoutParams(Margins(12, 5, 0, 5))))->SetShadow(true);
 	if (score_ == ReportingOverallScore::PERFECT || score_ == ReportingOverallScore::PLAYABLE) {
-		resultNotice_ = leftColumnItems->Add(new TextView(rp->T("FeedbackDelayInfo", "Your data is being submitted in the background."), FLAG_WRAP_TEXT, false, new LinearLayoutParams(Margins(12, 5, 0, 5))));
+		resultNotice_ = parent->Add(new TextView(rp->T("FeedbackDelayInfo", "Your data is being submitted in the background."), FLAG_WRAP_TEXT, false, new LinearLayoutParams(Margins(12, 5, 0, 5))));
 	} else {
-		resultNotice_ = leftColumnItems->Add(new TextView(rp->T("SuggestionsWaiting", "Submitting and checking other user feedback.."), FLAG_WRAP_TEXT, false, new LinearLayoutParams(Margins(12, 5, 0, 5))));
+		resultNotice_ = parent->Add(new TextView(rp->T("SuggestionsWaiting", "Submitting and checking other user feedback.."), FLAG_WRAP_TEXT, false, new LinearLayoutParams(Margins(12, 5, 0, 5))));
 	}
 	resultNotice_->SetShadow(true);
 	resultItems_ = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(12, 5, 0, 5)));
-	leftColumnItems->Add(resultItems_);
+	parent->Add(resultItems_);
 
-	rightColumnItems->SetSpacing(0.0f);
-	rightColumnItems->Add(new Choice(rp->T("View Feedback")))->OnClick.Handle(this, &ReportFinishScreen::HandleViewFeedback);
+	parent->Add(new Spacer(20.0f));
 
-	rightColumnItems->Add(new Spacer(25.0));
-	rightColumnItems->Add(new Choice(di->T("Back"), "", false, new AnchorLayoutParams(150, WRAP_CONTENT, 10, NONE, NONE, 10)))->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
-
-	root_ = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT, 1.0f));
-	root_->Add(leftColumn);
-	root_->Add(rightColumn);
-
-	leftColumn->Add(leftColumnItems);
-	rightColumn->Add(rightColumnItems);
+	parent->Add(new Choice(rp->T("View Feedback"), ImageID("I_LINK_OUT")))->OnClick.Handle(this, &ReportFinishScreen::HandleViewFeedback);
 }
 
 void ReportFinishScreen::update() {
@@ -473,6 +474,8 @@ void ReportFinishScreen::update() {
 }
 
 void ReportFinishScreen::ShowSuggestions() {
+	using namespace UI;
+
 	auto rp = GetI18NCategory(I18NCat::REPORTING);
 
 	auto suggestions = Reporting::CompatibilitySuggestions();
@@ -518,8 +521,7 @@ void ReportFinishScreen::ShowSuggestions() {
 	}
 }
 
-UI::EventReturn ReportFinishScreen::HandleViewFeedback(UI::EventParams &e) {
+void ReportFinishScreen::HandleViewFeedback(UI::EventParams &e) {
 	const std::string url = "https://" + Reporting::ServerHost() + "/game/" + Reporting::CurrentGameID();
 	System_LaunchUrl(LaunchUrlType::BROWSER_URL, url.c_str());
-	return EVENT_DONE;
 }

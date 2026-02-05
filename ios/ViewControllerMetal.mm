@@ -1,7 +1,6 @@
 #import "AppDelegate.h"
 #import "ViewControllerMetal.h"
 #import "DisplayManager.h"
-#include "Controls.h"
 #import "iOSCoreAudio.h"
 
 #include "Common/Log.h"
@@ -16,28 +15,18 @@
 #include "Common/System/System.h"
 #include "Common/System/OSD.h"
 #include "Common/System/NativeApp.h"
+#include "Common/System/Request.h"
 #include "Common/GraphicsContext.h"
 #include "Common/Thread/ThreadUtil.h"
 
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/System.h"
-#include "Core/HLE/sceUsbCam.h"
-#include "Core/HLE/sceUsbGps.h"
+
+#include "GPU/Vulkan/VulkanUtil.h"
 
 // ViewController lifecycle:
 // https://www.progressconcepts.com/blog/ios-appdelegate-viewcontroller-method-order/
-
-// TODO: Share this between backends.
-static uint32_t FlagsFromConfig() {
-	uint32_t flags;
-	if (g_Config.bVSync) {
-		flags = VULKAN_FLAG_PRESENT_FIFO;
-	} else {
-		flags = VULKAN_FLAG_PRESENT_MAILBOX | VULKAN_FLAG_PRESENT_IMMEDIATE;
-	}
-	return flags;
-}
 
 enum class GraphicsContextState {
 	PENDING,
@@ -48,7 +37,7 @@ enum class GraphicsContextState {
 
 class IOSVulkanContext : public GraphicsContext {
 public:
-	IOSVulkanContext();
+	IOSVulkanContext() {}
 	~IOSVulkanContext() {
 		delete g_Vulkan;
 		g_Vulkan = nullptr;
@@ -57,21 +46,19 @@ public:
 	bool InitAPI();
 
 	bool InitFromRenderThread(CAMetalLayer *layer, int desiredBackbufferSizeX, int desiredBackbufferSizeY);
-	void ShutdownFromRenderThread();  // Inverses InitFromRenderThread.
+	void ShutdownFromRenderThread() override;  // Inverses InitFromRenderThread.
 
-	void Shutdown();
-	void Resize();
+	void Shutdown() override;
+	void Resize() override {}
 
-	void *GetAPIContext() { return g_Vulkan; }
-	Draw::DrawContext *GetDrawContext() { return draw_; }
+	void *GetAPIContext() override { return g_Vulkan; }
+	Draw::DrawContext *GetDrawContext() override { return draw_; }
 
 private:
 	VulkanContext *g_Vulkan = nullptr;
 	Draw::DrawContext *draw_ = nullptr;
 	GraphicsContextState state_ = GraphicsContextState::PENDING;
 };
-
-IOSVulkanContext::IOSVulkanContext() {}
 
 bool IOSVulkanContext::InitFromRenderThread(CAMetalLayer *layer, int desiredBackbufferSizeX, int desiredBackbufferSizeY) {
 	INFO_LOG(Log::G3D, "IOSVulkanContext::InitFromRenderThread: desiredwidth=%d desiredheight=%d", desiredBackbufferSizeX, desiredBackbufferSizeY);
@@ -86,33 +73,36 @@ bool IOSVulkanContext::InitFromRenderThread(CAMetalLayer *layer, int desiredBack
 		return false;
 	}
 
-	bool success = true;
-	if (g_Vulkan->InitSwapchain()) {
-		bool useMultiThreading = g_Config.bRenderMultiThreading;
-		if (g_Config.iInflightFrames == 1) {
-			useMultiThreading = false;
-		}
-		draw_ = Draw::T3DCreateVulkanContext(g_Vulkan, useMultiThreading);
-		SetGPUBackend(GPUBackend::VULKAN);
-		success = draw_->CreatePresets();  // Doesn't fail, we ship the compiler.
-		_assert_msg_(success, "Failed to compile preset shaders");
-		draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER, g_Vulkan->GetBackbufferWidth(), g_Vulkan->GetBackbufferHeight());
-
-		VulkanRenderManager *renderManager = (VulkanRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
-		renderManager->SetInflightFrames(g_Config.iInflightFrames);
-		success = renderManager->HasBackbuffers();
-	} else {
-		success = false;
+	bool useMultiThreading = g_Config.bRenderMultiThreading;
+	if (g_Config.iInflightFrames == 1) {
+		useMultiThreading = false;
 	}
 
-	INFO_LOG(Log::G3D, "IOSVulkanContext::Init completed, %s", success ? "successfully" : "but failed");
-	if (!success) {
+	draw_ = Draw::T3DCreateVulkanContext(g_Vulkan, useMultiThreading);
+
+	VkPresentModeKHR presentMode = ConfigPresentModeToVulkan(draw_);
+
+	// This MUST run on the main thread. We're taking our chances with a dispatch_sync here.
+	g_Vulkan->InitSwapchain(presentMode);
+
+	if (false) {
+		delete draw_;
+		ERROR_LOG(Log::G3D, "InitSwapchain failed");
 		g_Vulkan->DestroySwapchain();
 		g_Vulkan->DestroySurface();
 		g_Vulkan->DestroyDevice();
 		g_Vulkan->DestroyInstance();
+		return false;
 	}
-	return success;
+
+	SetGPUBackend(GPUBackend::VULKAN);
+	bool shaderSuccess = draw_->CreatePresets();  // Doesn't fail, we ship the compiler.
+	_assert_msg_(shaderSuccess, "Failed to compile preset shaders");
+	draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER, g_Vulkan->GetBackbufferWidth(), g_Vulkan->GetBackbufferHeight());
+
+	VulkanRenderManager *renderManager = (VulkanRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
+	renderManager->SetInflightFrames(g_Config.iInflightFrames);
+	return true;
 }
 
 void IOSVulkanContext::ShutdownFromRenderThread() {
@@ -134,21 +124,6 @@ void IOSVulkanContext::Shutdown() {
 	// We keep the g_Vulkan context around to avoid invalidating a ton of pointers around the app.
 	finalize_glslang();
 	INFO_LOG(Log::G3D, "IOSVulkanContext::Shutdown completed");
-}
-
-void IOSVulkanContext::Resize() {
-	INFO_LOG(Log::G3D, "IOSVulkanContext::Resize begin (oldsize: %dx%d)", g_Vulkan->GetBackbufferWidth(), g_Vulkan->GetBackbufferHeight());
-
-	draw_->HandleEvent(Draw::Event::LOST_BACKBUFFER, g_Vulkan->GetBackbufferWidth(), g_Vulkan->GetBackbufferHeight());
-	g_Vulkan->DestroySwapchain();
-	g_Vulkan->DestroySurface();
-
-	g_Vulkan->UpdateFlags(FlagsFromConfig());
-
-	g_Vulkan->ReinitSurface();
-	g_Vulkan->InitSwapchain();
-	draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER, g_Vulkan->GetBackbufferWidth(), g_Vulkan->GetBackbufferHeight());
-	INFO_LOG(Log::G3D, "IOSVulkanContext::Resize end (final size: %dx%d)", g_Vulkan->GetBackbufferWidth(), g_Vulkan->GetBackbufferHeight());
 }
 
 bool IOSVulkanContext::InitAPI() {
@@ -175,9 +150,7 @@ bool IOSVulkanContext::InitAPI() {
 	}
 
 	VulkanContext::CreateInfo info{};
-	info.app_name = "PPSSPP";
-	info.app_ver = gitVer.ToInteger();
-	info.flags = FlagsFromConfig();
+	InitVulkanCreateInfoFromConfig(&info);
 	if (!g_Vulkan->CreateInstanceAndDevice(info)) {
 		delete g_Vulkan;
 		g_Vulkan = nullptr;
@@ -203,46 +176,20 @@ static std::atomic<bool> renderLoopRunning;
 static std::thread g_renderLoopThread;
 
 @interface PPSSPPViewControllerMetal () {
-	ICadeTracker g_iCadeTracker;
-	TouchTracker g_touchTracker;
-
 	IOSVulkanContext *graphicsContext;
-	LocationHelper *locationHelper;
-	CameraHelper *cameraHelper;
 }
-
-@property (nonatomic) GCController *gameController __attribute__((weak_import));
-@property (strong, nonatomic) CMMotionManager *motionManager;
-@property (strong, nonatomic) NSOperationQueue *accelerometerQueue;
 
 @end  // @interface
 
-@implementation PPSSPPViewControllerMetal {
-	UIScreenEdgePanGestureRecognizer *mBackGestureRecognizer;
-}
+@implementation PPSSPPViewControllerMetal {}
 
 - (id)init {
 	self = [super init];
-	if (self) {
-		sharedViewController = self;
-		g_iCadeTracker.InitKeyMap();
-
-		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appWillTerminate:) name:UIApplicationWillTerminateNotification object:nil];
-		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(controllerDidConnect:) name:GCControllerDidConnectNotification object:nil];
-		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(controllerDidDisconnect:) name:GCControllerDidDisconnectNotification object:nil];
-	}
-	self.accelerometerQueue = [[NSOperationQueue alloc] init];
-	self.accelerometerQueue.name = @"AccelerometerQueue";
-	self.accelerometerQueue.maxConcurrentOperationCount = 1;
 	return self;
 }
 
-- (void)appWillTerminate:(NSNotification *)notification
-{
-	[self shutdown];
-}
-
 // Should be very similar to the Android one, probably mergeable.
+// This is the EmuThread for iOS.
 void VulkanRenderLoop(IOSVulkanContext *graphicsContext, CAMetalLayer *metalLayer) {
 	SetCurrentThreadName("EmuThreadVulkan");
 	INFO_LOG(Log::G3D, "Entering EmuThreadVulkan");
@@ -343,50 +290,28 @@ void VulkanRenderLoop(IOSVulkanContext *graphicsContext, CAMetalLayer *metalLaye
 
 // These two are forwarded from the appDelegate
 - (void)didBecomeActive {
-	INFO_LOG(Log::G3D, "didBecomeActive GL");
-	if (self.motionManager.accelerometerAvailable) {
-		self.motionManager.accelerometerUpdateInterval = 1.0 / 60.0;
-		INFO_LOG(Log::G3D, "Starting accelerometer updates.");
-
-		[self.motionManager startAccelerometerUpdatesToQueue:self.accelerometerQueue
-							withHandler:^(CMAccelerometerData *accelerometerData, NSError *error) {
-			if (error) {
-				NSLog(@"Accelerometer error: %@", error);
-				return;
-			}
-			ProcessAccelerometerData(accelerometerData);
-		}];
-	} else {
-		INFO_LOG(Log::G3D, "No accelerometer available, not starting updates.");
-	}
+	[super didBecomeActive];
+	INFO_LOG(Log::G3D, "didBecomeActive Metal");
+	
 	// Spin up the emu thread. It will in turn spin up the Vulkan render thread
 	// on its own.
 	[self runVulkanRenderLoop];
+	[[DisplayManager shared] updateResolution:[UIScreen mainScreen]];
 }
 
 - (void)willResignActive {
-	INFO_LOG(Log::G3D, "willResignActive GL");
+	INFO_LOG(Log::G3D, "willResignActive Metal");
 	[self requestExitVulkanRenderLoop];
 
-	// Stop accelerometer updates
-	if (self.motionManager.accelerometerActive) {
-		INFO_LOG(Log::G3D, "Stopping accelerometer updates");
-		[self.motionManager stopAccelerometerUpdates];
-	}
+	[super willResignActive];
 }
 
-- (void)shutdown
-{
-	INFO_LOG(Log::System, "shutdown VK");
+- (void)shutdown {
+	[super shutdown];
+
+	INFO_LOG(Log::System, "shutdown");
 
 	g_Config.Save("shutdown vk");
-
-	_dbg_assert_(sharedViewController != nil);
-	sharedViewController = nil;
-
-	[[NSNotificationCenter defaultCenter] removeObserver:self];
-
-	self.gameController = nil;
 
 	if (graphicsContext) {
 		graphicsContext->Shutdown();
@@ -422,6 +347,9 @@ void VulkanRenderLoop(IOSVulkanContext *graphicsContext, CAMetalLayer *metalLaye
 	UIScreen* screen = [(AppDelegate*)[UIApplication sharedApplication].delegate screen];
 	self.view.frame = [screen bounds];
 	self.view.multipleTouchEnabled = YES;
+	// self.view.insetsLayoutMarginsFromSafeArea = NO;
+	// self.view.clipsToBounds = YES;
+
 	graphicsContext = new IOSVulkanContext();
 
 	[[DisplayManager shared] updateResolution:[UIScreen mainScreen]];
@@ -435,21 +363,6 @@ void VulkanRenderLoop(IOSVulkanContext *graphicsContext, CAMetalLayer *metalLaye
 	}
 
 	INFO_LOG(Log::G3D, "Detected size: %dx%d", g_display.pixel_xres, g_display.pixel_yres);
-
-	cameraHelper = [[CameraHelper alloc] init];
-	[cameraHelper setDelegate:self];
-
-	locationHelper = [[LocationHelper alloc] init];
-	[locationHelper setDelegate:self];
-
-	// Initialize the motion manager for accelerometer control.
-	self.motionManager = [[CMMotionManager alloc] init];
-}
-
-// Allow device rotation to resize the swapchain
--(void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id)coordinator {
-	[super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
-	// TODO: Handle resizing properly.
 }
 
 - (UIView *)getView {
@@ -472,255 +385,26 @@ void VulkanRenderLoop(IOSVulkanContext *graphicsContext, CAMetalLayer *metalLaye
 	INFO_LOG(Log::G3D, "viewWillDisappear");
 }
 
-- (void)viewDidAppear:(BOOL)animated {
-	[super viewDidAppear:animated];
-	INFO_LOG(Log::G3D, "viewDidAppear");
-	[self hideKeyboard];
-	[self updateGesture];
-
-}
-
-- (BOOL)prefersHomeIndicatorAutoHidden {
-	if (g_Config.iAppSwitchMode == (int)AppSwitchMode::DOUBLE_SWIPE_INDICATOR) {
-		return NO;
-	} else {
-		return YES;
-	}
-}
-
-- (void)appSwitchModeChanged
-{
-	[self setNeedsUpdateOfHomeIndicatorAutoHidden];
-}
-
-- (void)shareText:(NSString *)text {
-	NSArray *items = @[text];
-	UIActivityViewController * viewController = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
-	dispatch_async(dispatch_get_main_queue(), ^{
-		[self presentViewController:viewController animated:YES completion:nil];
-	});
-}
-
-extern float g_safeInsetLeft;
-extern float g_safeInsetRight;
-extern float g_safeInsetTop;
-extern float g_safeInsetBottom;
-
-- (void)viewSafeAreaInsetsDidChange {
-	if (@available(iOS 11.0, *)) {
-		[super viewSafeAreaInsetsDidChange];
-		// we use 0.0f instead of safeAreaInsets.bottom because the bottom overlay isn't disturbing (for now)
-		g_safeInsetLeft = self.view.safeAreaInsets.left;
-		g_safeInsetRight = self.view.safeAreaInsets.right;
-		g_safeInsetTop = self.view.safeAreaInsets.top;
-		g_safeInsetBottom = 0.0f;
-	}
-}
-
-// Enables tapping for edge area.
--(UIRectEdge)preferredScreenEdgesDeferringSystemGestures
-{
-	if (GetUIState() == UISTATE_INGAME) {
-		// In-game, we need all the control we can get. Though, we could possibly
-		// allow the top edge?
-		INFO_LOG(Log::System, "Defer system gestures on all edges");
-		return UIRectEdgeAll;
-	} else {
-		INFO_LOG(Log::System, "Allow system gestures on the bottom");
-		// Allow task switching gestures to take precedence, without causing
-		// scroll events in the UI.
-		return UIRectEdgeTop | UIRectEdgeLeft | UIRectEdgeRight;
-	}
-}
-
-- (void)uiStateChanged
-{
-	[self setNeedsUpdateOfScreenEdgesDeferringSystemGestures];
-	[self hideKeyboard];
-	[self updateGesture];
-}
-
-- (void)updateGesture {
-	INFO_LOG(Log::System, "Updating swipe gesture.");
-
-	if (mBackGestureRecognizer) {
-		INFO_LOG(Log::System, "Removing swipe gesture.");
-		[[self view] removeGestureRecognizer:mBackGestureRecognizer];
-		mBackGestureRecognizer = nil;
-	}
-
-	if (GetUIState() != UISTATE_INGAME) {
-		INFO_LOG(Log::System, "Adding swipe gesture.");
-		mBackGestureRecognizer = [[UIScreenEdgePanGestureRecognizer alloc] initWithTarget:self action:@selector(handleSwipeFrom:) ];
-		[mBackGestureRecognizer setEdges:UIRectEdgeLeft];
-		[[self view] addGestureRecognizer:mBackGestureRecognizer];
-	}
-}
-
 - (void)bindDefaultFBO
 {
 	// Do nothing
 }
 
-- (NSUInteger)supportedInterfaceOrientations
-{
-	return UIInterfaceOrientationMaskLandscape;
-}
+- (void)viewWillTransitionToSize:(CGSize)size
+		withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+	[super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
 
-- (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event
-{
-	g_touchTracker.Began(touches, self.view);
-}
+	[self.view endEditing:YES]; // clears any input focus
 
-- (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event
-{
-	g_touchTracker.Moved(touches, self.view);
-}
-
-- (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event
-{
-	g_touchTracker.Ended(touches, self.view);
-}
-
-- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
-{
-	g_touchTracker.Cancelled(touches, self.view);
-}
-
-- (void)buttonDown:(iCadeState)button
-{
-	g_iCadeTracker.ButtonDown(button);
-}
-
-- (void)buttonUp:(iCadeState)button
-{
-	g_iCadeTracker.ButtonUp(button);
-}
-
-// See PPSSPPUIApplication.mm for the other method
-#if PPSSPP_PLATFORM(IOS_APP_STORE)
-
-- (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
-	KeyboardPressesBegan(presses, event);
-}
-
-- (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
-	KeyboardPressesEnded(presses, event);
-}
-
-- (void)pressesCancelled:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
-	KeyboardPressesEnded(presses, event);
-}
-
-#endif
-
-- (void)controllerDidConnect:(NSNotification *)note
-{
-	if (![[GCController controllers] containsObject:self.gameController]) self.gameController = nil;
-
-	if (self.gameController != nil) return; // already have a connected controller
-
-	[self setupController:(GCController *)note.object];
-}
-
-- (void)controllerDidDisconnect:(NSNotification *)note
-{
-	if (self.gameController == note.object) {
-		self.gameController = nil;
-
-		if ([[GCController controllers] count] > 0) {
-			[self setupController:[[GCController controllers] firstObject]];
-		}
-	}
-}
-
-- (void)setupController:(GCController *)controller
-{
-	self.gameController = controller;
-	if (!InitController(controller)) {
-		self.gameController = nil;
-	}
-}
-
-- (void)startVideo:(int)width height:(int)height {
-	[cameraHelper startVideo:width h:height];
-}
-
-- (void)stopVideo {
-	[cameraHelper stopVideo];
-}
-
-- (void)PushCameraImageIOS:(long long)len buffer:(unsigned char*)data {
-	Camera::pushCameraImage(len, data);
-}
-
-- (void)startLocation {
-	[locationHelper startLocationUpdates];
-}
-
-- (void)stopLocation {
-	[locationHelper stopLocationUpdates];
-}
-
-- (void)SetGpsDataIOS:(CLLocation *)newLocation {
-	GPS::setGpsData((long long)newLocation.timestamp.timeIntervalSince1970,
-					newLocation.horizontalAccuracy/5.0,
-					newLocation.coordinate.latitude, newLocation.coordinate.longitude,
-					newLocation.altitude,
-					MAX(newLocation.speed * 3.6, 0.0), /* m/s to km/h */
-					0 /* bearing */);
-}
-
-- (void)handleSwipeFrom:(UIScreenEdgePanGestureRecognizer *)recognizer
-{
-	if (recognizer.state == UIGestureRecognizerStateEnded) {
-		KeyInput key;
-		key.flags = KEY_DOWN | KEY_UP;
-		key.keyCode = NKCODE_BACK;
-		key.deviceId = DEVICE_ID_TOUCH;
-		NativeKey(key);
-		INFO_LOG(Log::System, "Detected back swipe");
-	}
-}
-// The below is inspired by https://stackoverflow.com/questions/7253477/how-to-display-the-iphone-ipad-keyboard-over-a-full-screen-opengl-es-app
-// It's a bit limited but good enough.
-
--(void) deleteBackward {
-	KeyInput input{};
-	input.deviceId = DEVICE_ID_KEYBOARD;
-	input.flags = KEY_DOWN | KEY_UP;
-	input.keyCode = NKCODE_DEL;
-	NativeKey(input);
-	INFO_LOG(Log::System, "Backspace");
-}
-
--(BOOL) hasText
-{
-	return YES;
-}
-
--(void) insertText:(NSString *)text
-{
-	std::string str([text UTF8String]);
-	INFO_LOG(Log::System, "Chars: %s", str.c_str());
-	SendKeyboardChars(str);
-}
-
--(BOOL) canBecomeFirstResponder
-{
-	return YES;
-}
-
--(void) showKeyboard {
-	dispatch_async(dispatch_get_main_queue(), ^{
-		[self becomeFirstResponder];
-	});
-}
-
--(void) hideKeyboard {
-	dispatch_async(dispatch_get_main_queue(), ^{
-		[self resignFirstResponder];
-	});
+	[coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+		NSLog(@"Rotating to size: %@", NSStringFromCGSize(size));
+	} completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+		NSLog(@"Rotation finished");
+		// Reinitialize graphics context to match new size
+		[self requestExitVulkanRenderLoop];
+		[self runVulkanRenderLoop];
+		[[DisplayManager shared] updateResolution:[UIScreen mainScreen]];
+	}];
 }
 
 @end

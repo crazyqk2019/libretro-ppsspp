@@ -28,7 +28,6 @@
 #include "Common/LogReporting.h"
 #include "GPU/ge_constants.h"
 #include "GPU/Common/ShaderCommon.h"
-#include "GPU/GPUCommon.h"
 #include "GPU/GPUState.h"
 
 #if PPSSPP_ARCH(ARM)
@@ -39,6 +38,8 @@
 #include "Common/x64Emitter.h"
 #elif PPSSPP_ARCH(RISCV64)
 #include "Common/RiscVEmitter.h"
+#elif PPSSPP_ARCH(LOONGARCH64)
+#include "Common/LoongArch64Emitter.h"
 #else
 #include "Common/FakeEmitter.h"
 #endif
@@ -86,7 +87,7 @@ struct DecVtxFormat {
 
 void GetIndexBounds(const void *inds, int count, u32 vertType, u16 *indexLowerBound, u16 *indexUpperBound);
 
-inline int RoundUp4(int x) {
+inline constexpr int RoundUp4(int x) {
 	return (x + 3) & ~3;
 }
 
@@ -511,6 +512,7 @@ private:
 	void CompareToJit(const u8 *startPtr, u8 *decodedptr, int count, const UVScale *uvScaleOffset) const;
 };
 
+const char *GetStepFunctionName(StepFunction func);
 
 // A compiled vertex decoder takes the following arguments (C calling convention):
 // u8 *src, u8 *dst, int count
@@ -530,6 +532,8 @@ private:
 #define VERTEXDECODER_JIT_BACKEND Gen::XCodeBlock
 #elif PPSSPP_ARCH(RISCV64)
 #define VERTEXDECODER_JIT_BACKEND RiscVGen::RiscVCodeBlock
+#elif PPSSPP_ARCH(LOONGARCH64)
+#define VERTEXDECODER_JIT_BACKEND LoongArch64Gen::LoongArch64CodeBlock
 #endif
 
 

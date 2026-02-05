@@ -53,8 +53,8 @@ bool TouchInputHandler::GetTouchPoint(HWND hWnd, const TOUCHINPUT &input, float 
 	point.x = (LONG)(TOUCH_COORD_TO_PIXEL(input.x));
 	point.y = (LONG)(TOUCH_COORD_TO_PIXEL(input.y));
 	if (ScreenToClient(hWnd, &point)) {
-		x = point.x * g_display.dpi_scale;
-		y = point.y * g_display.dpi_scale;
+		x = point.x * g_display.dpi_scale_x;
+		y = point.y * g_display.dpi_scale_y;
 		return true;
 	}
 
@@ -99,7 +99,7 @@ void TouchInputHandler::handleTouchEvent(HWND hWnd, UINT message, WPARAM wParam,
 // disable the press and hold gesture for the given window
 void TouchInputHandler::disablePressAndHold(HWND hWnd) {
 	// The atom identifier and Tablet PC atom
-	LPCTSTR tabletAtom = _T("MicrosoftTabletPenServiceProperty");
+	wchar_t *tabletAtom = L"MicrosoftTabletPenServiceProperty";
 	ATOM atomID = GlobalAddAtom(tabletAtom);
 	
 	// If getting the ID failed, return false
@@ -116,7 +116,7 @@ void TouchInputHandler::touchUp(int id, float x, float y){
 	touchevent.id = id;
 	touchevent.x = x;
 	touchevent.y = y;
-	touchevent.flags = TOUCH_UP;
+	touchevent.flags = TouchInputFlags::UP;
 	NativeTouch(touchevent);
 }
 
@@ -125,7 +125,7 @@ void TouchInputHandler::touchDown(int id, float x, float y){
 	touchevent.id = id;
 	touchevent.x = x;
 	touchevent.y = y;
-	touchevent.flags = TOUCH_DOWN;
+	touchevent.flags = TouchInputFlags::DOWN;
 	NativeTouch(touchevent);
 }
 
@@ -134,7 +134,7 @@ void TouchInputHandler::touchMove(int id, float x, float y){
 	touchevent.id = id;
 	touchevent.x = x;
 	touchevent.y = y;
-	touchevent.flags = TOUCH_MOVE;
+	touchevent.flags = TouchInputFlags::MOVE;
 	NativeTouch(touchevent);
 }
 

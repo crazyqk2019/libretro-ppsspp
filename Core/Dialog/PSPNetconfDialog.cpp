@@ -24,6 +24,7 @@
 #include "Core/MemMapHelpers.h"
 #include "Core/Util/PPGeDraw.h"
 #include "Core/HLE/HLE.h"
+#include "Core/HLE/ErrorCodes.h"
 #include "Core/HLE/sceKernelMemory.h"
 #include "Core/HLE/sceCtrl.h"
 #include "Core/HLE/sceUtility.h"
@@ -58,6 +59,8 @@ int PSPNetconfDialog::Init(u32 paramAddr) {
 	if (ReadStatus() != SCE_UTILITY_STATUS_NONE)
 		return SCE_ERROR_UTILITY_INVALID_STATUS;
 
+	NOTICE_LOG(Log::sceNet, "PSPNetConfDialog Init");
+	jsonReady_ = false;
 	// Kick off a request to the infra-dns.json since we'll need it later.
 	StartInfraJsonDownload();
 
@@ -118,7 +121,7 @@ int PSPNetconfDialog::Update(int animSpeed) {
 				ERROR_LOG(Log::sceNet, "Failed to parse bad json. Deleting cache file.");
 				DeleteAutoDNSCacheFile();
 			} else {
-				INFO_LOG(Log::sceNet, "Got and processed the AutoDNS json.");
+				DEBUG_LOG(Log::sceNet, "Got and processed the AutoDNS json.");
 			}
 		} else {
 			// TODO: Show a notice?

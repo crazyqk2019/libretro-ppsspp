@@ -43,6 +43,7 @@
 #include "Core/Core.h"
 #include "Core/System.h"
 #include "Core/HLE/HLE.h"
+#include "Core/HLE/ErrorCodes.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/HLE/sceDisplay.h"
 #include "Core/HLE/sceKernel.h"
@@ -155,8 +156,12 @@ void __DisplayVblankEndCallback(SceUID threadID, SceUID prevCallbackId);
 void __DisplayFlip(int cyclesLate);
 static void __DisplaySetFramerate(void);
 
+static bool UseAutoFrameSkip() {
+	return g_Config.bAutoFrameSkip && !g_Config.bSkipBufferEffects;
+}
+
 static bool UseLagSync() {
-	return g_Config.bForceLagSync && !g_Config.bAutoFrameSkip;
+	return g_Config.bForceLagSync && !UseAutoFrameSkip();
 }
 
 static void ScheduleLagSync(int over = 0) {
@@ -174,7 +179,7 @@ static void ScheduleLagSync(int over = 0) {
 
 void __DisplayInit() {
 	__DisplaySetFramerate();
-	DisplayHWInit();
+	DisplayHWReset();
 	hasSetMode = false;
 	mode = 0;
 	resumeMode = 0;
@@ -295,7 +300,6 @@ void __DisplayDoState(PointerWrap &p) {
 }
 
 void __DisplayShutdown() {
-	DisplayHWShutdown();
 	vblankWaitingThreads.clear();
 }
 
@@ -402,6 +406,8 @@ static void DoFrameTiming(bool throttle, bool *skipFrame, float scaledTimestep, 
 	PROFILE_THIS_SCOPE("timing");
 	*skipFrame = false;
 
+	const bool autoFrameSkip = UseAutoFrameSkip();
+
 	// Check if the frameskipping code should be enabled. If neither throttling or frameskipping is on,
 	// we have nothing to do here.
 	bool doFrameSkip = g_Config.iFrameSkip != 0;
@@ -424,8 +430,8 @@ static void DoFrameTiming(bool throttle, bool *skipFrame, float scaledTimestep, 
 	}
 
 	// Auto-frameskip automatically if speed limit is set differently than the default.
-	int frameSkipNum = DisplayCalculateFrameSkip();
-	if (g_Config.bAutoFrameSkip) {
+	const int frameSkipNum = g_Config.iFrameSkip;
+	if (autoFrameSkip) {
 		// autoframeskip
 		// Argh, we are falling behind! Let's skip a frame and see if we catch up.
 		if (curFrameTime > nextFrameTime && doFrameSkip) {
@@ -555,20 +561,29 @@ static void NotifyUserIfSlow() {
 	if (!g_Config.bHideSlowWarnings &&
 		!hasNotifiedSlow &&
 		PSP_CoreParameter().fpsLimit == FPSLimit::NORMAL &&
-		DisplayIsRunningSlow()) {
+		DisplayIsRunningSlow() && g_Config.bSoftwareRendering) {
 #ifndef _DEBUG
 		auto err = GetI18NCategory(I18NCat::ERRORS);
-		if (g_Config.bSoftwareRendering) {
-			g_OSD.Show(OSDType::MESSAGE_INFO, err->T("Running slow: Try turning off Software Rendering"), 5.0f);
-		} else {
-			g_OSD.Show(OSDType::MESSAGE_INFO, err->T("Running slow: try frameskip, sound is choppy when slow"));
-		}
+		g_OSD.Show(OSDType::MESSAGE_INFO, err->T("Running slow: Try turning off Software Rendering"), 5.0f);
 #endif
 		hasNotifiedSlow = true;
 	}
 }
 
+static DisplayLayoutConfig g_displayLayoutConfigCached;
+
+void __DisplaySetDisplayLayoutConfig(const DisplayLayoutConfig &config) {
+	g_displayLayoutConfigCached = config;
+}
+
 void __DisplayFlip(int cyclesLate) {
+	if (!gpu) {
+		_dbg_assert_(gpu);
+		// Something has gone wrong.
+		flippedThisFrame = true;
+		return;
+	}
+
 	__DisplaySetFramerate();
 
 	flippedThisFrame = true;
@@ -582,25 +597,6 @@ void __DisplayFlip(int cyclesLate) {
 
 	bool duplicateFrames = g_Config.bRenderDuplicateFrames && g_Config.iFrameSkip == 0;
 
-	bool fastForwardSkipFlip = g_Config.iFastForwardMode != (int)FastForwardMode::CONTINUOUS;
-
-	if (gpu) {
-		Draw::DrawContext *draw = gpu->GetDrawContext();
-
-		if (draw) {
-			g_frameTiming.presentMode = ComputePresentMode(draw, &g_frameTiming.presentInterval);
-			if (!draw->GetDeviceCaps().presentInstantModeChange && g_frameTiming.presentMode == Draw::PresentMode::FIFO) {
-				// Some backends can't just flip into MAILBOX/IMMEDIATE mode instantly.
-				// Vulkan doesn't support the interval setting, so we force skipping the flip.
-				// TODO: We'll clean this up in a more backend-independent way later.
-				fastForwardSkipFlip = true;
-			}
-		} else {
-			g_frameTiming.presentMode = Draw::PresentMode::FIFO;
-			g_frameTiming.presentInterval = 1;
-		}
-	}
-
 	if (!g_Config.bSkipBufferEffects) {
 		postEffectRequiresFlip = duplicateFrames || g_Config.bShaderChainRequires60FPS;
 	}
@@ -611,11 +607,14 @@ void __DisplayFlip(int cyclesLate) {
 
 	const bool fbDirty = gpu->FramebufferDirty();
 
+	Draw::DrawContext *draw = gpu->GetDrawContext();
+
 	bool needFlip = fbDirty || noRecentFlip || postEffectRequiresFlip;
 	if (!needFlip) {
 		// Okay, there's no new frame to draw, game might be sitting in a static loading screen
 		// or similar, and not long enough to trigger noRecentFlip. But audio may be playing, so we need to time still.
 		DoFrameIdleTiming();
+		g_frameTiming.ComputePresentMode(draw, false);
 		return;
 	}
 
@@ -629,10 +628,16 @@ void __DisplayFlip(int cyclesLate) {
 	bool forceNoFlip = false;
 	float refreshRate = System_GetPropertyFloat(SYSPROP_DISPLAY_REFRESH_RATE);
 	// Avoid skipping on devices that have 58 or 59 FPS, except when alternate speed is set.
-	bool refreshRateNeedsSkip = FrameTimingLimit() != framerate && FrameTimingLimit() > refreshRate;
+	const double fpsLimit = FrameTimingLimit();
+	bool throttle = fpsLimit != 0.0;
+
+	bool refreshRateNeedsSkip = (fpsLimit != framerate && fpsLimit > refreshRate) || !throttle;
+
+	g_frameTiming.ComputePresentMode(draw, refreshRateNeedsSkip);
+
 	// Alternative to frameskip fast-forward, where we draw everything.
 	// Useful if skipping a frame breaks graphics or for checking drawing speed.
-	if (fastForwardSkipFlip && (!FrameTimingThrottled() || refreshRateNeedsSkip)) {
+	if (g_frameTiming.FastForwardNeedsSkipFlip() && (!FrameTimingThrottled() || refreshRateNeedsSkip)) {
 		static double lastFlip = 0;
 		double now = time_now_d();
 		if ((now - lastFlip) < 1.0f / refreshRate) {
@@ -656,7 +661,7 @@ void __DisplayFlip(int cyclesLate) {
 			}
 		}
 		if (nextFrame) {
-			gpu->CopyDisplayToOutput(fbReallyDirty);
+			gpu->CopyDisplayToOutput(g_displayLayoutConfigCached, fbReallyDirty);
 			if (fbReallyDirty) {
 				DisplayFireActualFlip();
 			}
@@ -667,9 +672,6 @@ void __DisplayFlip(int cyclesLate) {
 		gpuStats.numFlips++;
 	}
 
-	bool throttle = FrameTimingThrottled();
-
-	int fpsLimit = FrameTimingLimit();
 	float scaledTimestep = (float)numVBlanksSinceFlip * timePerVblank;
 	if (fpsLimit > 0 && fpsLimit != framerate) {
 		scaledTimestep *= (float)framerate / fpsLimit;
@@ -678,7 +680,7 @@ void __DisplayFlip(int cyclesLate) {
 	DoFrameTiming(throttle, &skipFrame, scaledTimestep, nextFrame);
 
 	int maxFrameskip = 8;
-	int frameSkipNum = DisplayCalculateFrameSkip();
+	const int frameSkipNum = g_Config.iFrameSkip;
 	if (throttle) {
 		// 4 here means 1 drawn, 4 skipped - so 12 fps minimum.
 		maxFrameskip = frameSkipNum;
@@ -694,6 +696,14 @@ void __DisplayFlip(int cyclesLate) {
 	} else {
 		gstate_c.skipDrawReason &= ~SKIPDRAW_SKIPFRAME;
 		numSkippedFrames = 0;
+
+		// NOTE!! It can happen that if we just toggled frameskip (especially auto), we are still in a state
+		// where we don't have a framebuffer bound, from the last frame. But framebuffermanager still might think
+		// that we're in non-buffered mode.
+		if (gpu->GetFramebufferManagerCommon() && !gpu->GetFramebufferManagerCommon()->UseBufferedRendering() && !g_Config.bSkipBufferEffects) {
+			gpu->GetFramebufferManagerCommon()->ForceUseBufferedRendering(!g_Config.bSkipBufferEffects);
+			gstate_c.skipDrawReason &= ~SKIPDRAW_NON_DISPLAYED_FB;
+		}
 	}
 
 	// Returning here with coreState == CORE_NEXTFRAME causes a buffer flip to happen (next frame).
@@ -753,6 +763,7 @@ void hleLagSync(u64 userdata, int cyclesLate) {
 	double now = before;
 	while (now < goal && goal < now + 0.01) {
 		// Tight loop on win32 - intentionally, as timing is otherwise not precise enough.
+		// TODO: Use the precise waits if available
 #ifndef _WIN32
 		const double left = goal - now;
 		if (left > 0.0f && left < 1.0f) {  // Sanity check
@@ -857,7 +868,7 @@ int sceDisplaySetFramebuf(u32 topaddr, int linesize, int pixelformat, int sync) 
 		return hleLogError(Log::sceDisplay, SCE_KERNEL_ERROR_INVALID_POINTER, "misaligned address");
 	}
 	if ((linesize & 0x3F) != 0 || (linesize == 0 && topaddr != 0)) {
-		return hleLogError(Log::sceDisplay, SCE_KERNEL_ERROR_INVALID_SIZE, "invalid stride");
+		return hleLogWarning(Log::sceDisplay, SCE_KERNEL_ERROR_INVALID_SIZE, "invalid stride");
 	}
 	if (pixelformat < 0 || pixelformat > GE_FORMAT_8888) {
 		return hleLogError(Log::sceDisplay, SCE_KERNEL_ERROR_INVALID_FORMAT, "invalid format");
@@ -865,7 +876,7 @@ int sceDisplaySetFramebuf(u32 topaddr, int linesize, int pixelformat, int sync) 
 
 	if (sync == PSP_DISPLAY_SETBUF_IMMEDIATE) {
 		if ((GEBufferFormat)pixelformat != latchedFramebuf.fmt || linesize != latchedFramebuf.stride) {
-			return hleReportError(Log::sceDisplay, SCE_KERNEL_ERROR_INVALID_MODE, "must change latched framebuf first");
+			return hleReportWarning(Log::sceDisplay, SCE_KERNEL_ERROR_INVALID_MODE, "must change latched framebuf first");
 		}
 	}
 
@@ -1131,11 +1142,11 @@ const HLEFunction sceDisplay[] = {
 };
 
 void Register_sceDisplay() {
-	RegisterModule("sceDisplay", ARRAY_SIZE(sceDisplay), sceDisplay);
+	RegisterHLEModule("sceDisplay", ARRAY_SIZE(sceDisplay), sceDisplay);
 }
 
 void Register_sceDisplay_driver() {
-	RegisterModule("sceDisplay_driver", ARRAY_SIZE(sceDisplay), sceDisplay);
+	RegisterHLEModule("sceDisplay_driver", ARRAY_SIZE(sceDisplay), sceDisplay);
 }
 
 static void __DisplaySetFramerate(void) {

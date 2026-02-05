@@ -50,14 +50,14 @@ private:
 // Sent unexpectedly with these properties:
 //  - pc: number value of PC register (inaccurate unless stepping.)
 //  - ticks: number of CPU cycles into emulation.
-//  - reason: a value submitted to Core_EnableStepping ("jit.branchdebug", "savestate.load", "ui.lost_focus", etc.)
-//  - relatedAddress: an address (often zero, but it can be a value of PC saved at some point, a related memory address, etc.)
+//  - reason: an optional property, if present, it's equal to the value submitted to Core_EnableStepping ("jit.branchdebug", "savestate.load", "ui.lost_focus", etc.)
+//  - relatedAddress: an optional address (often zero, but it can be a value of PC saved at some point, a related memory address, etc.), always present if 'reason' is present
 
 // CPU has resumed from stepping (cpu.resume)
 //
 // Sent unexpectedly with no other properties.
 void SteppingBroadcaster::Broadcast(net::WebSocketServer *ws) {
-	if (PSP_IsInited()) {
+	if (PSP_GetBootState() == BootState::Complete) {
 		int steppingCounter = Core_GetSteppingCounter();
 		// We ignore CORE_POWERDOWN as a stepping state.
 		if (coreState == CORE_STEPPING_CPU && steppingCounter != lastCounter_) {

@@ -22,6 +22,7 @@
 
 #include "Common/CommonTypes.h"
 #include "Common/File/Path.h"
+#include "Common/File/VFS/ZipFileReader.h"
 
 enum class IdentifiedFileType {
 	ERROR_IDENTIFYING,
@@ -35,16 +36,19 @@ enum class IdentifiedFileType {
 
 	PSP_DISC_DIRECTORY,
 
-	UNKNOWN_BIN,
-	UNKNOWN_ELF,
-	UNKNOWN_ISO,
-
 	// Try to reduce support emails...
 	ARCHIVE_RAR,
 	ARCHIVE_ZIP,
 	ARCHIVE_7Z,
 	PSP_PS1_PBP,
-	ISO_MODE2,
+	PSX_ISO,
+	PS2_ISO,
+	PS3_ISO,
+	PSP_UMD_VIDEO_ISO,
+
+	UNKNOWN_BIN,
+	UNKNOWN_ELF,
+	UNKNOWN_ISO,
 
 	NORMAL_DIRECTORY,
 
@@ -56,7 +60,10 @@ enum class IdentifiedFileType {
 	UNKNOWN,
 };
 
+const char *IdentifiedFileTypeToString(IdentifiedFileType type);
+
 // NB: It is a REQUIREMENT that implementations of this class are entirely thread safe!
+// TOOD: actually, is it really?
 class FileLoader {
 public:
 	enum class Flags {
@@ -77,7 +84,9 @@ public:
 	virtual bool IsDirectory() = 0;
 	virtual s64 FileSize() = 0;
 	virtual Path GetPath() const = 0;
-
+	virtual std::string GetFileExtension() const {
+		return GetPath().GetFileExtension();
+	}
 	virtual size_t ReadAt(s64 absolutePos, size_t bytes, size_t count, void *data, Flags flags = Flags::NONE) = 0;
 	virtual size_t ReadAt(s64 absolutePos, size_t bytes, void *data, Flags flags = Flags::NONE) {
 		return ReadAt(absolutePos, 1, bytes, data, flags);
@@ -98,7 +107,6 @@ public:
 		// Takes ownership.
 		delete backend_;
 	}
-
 	bool IsRemote() override {
 		return backend_->IsRemote();
 	}
@@ -129,6 +137,11 @@ public:
 	size_t ReadAt(s64 absolutePos, size_t bytes, void *data, Flags flags = Flags::NONE) override {
 		return backend_->ReadAt(absolutePos, bytes, data, flags);
 	}
+	FileLoader *Steal() {
+		FileLoader *backend = backend_;
+		backend_ = nullptr;
+		return backend;
+	}
 
 protected:
 	FileLoader *backend_;
@@ -139,15 +152,47 @@ inline u32 operator & (const FileLoader::Flags &a, const FileLoader::Flags &b) {
 }
 
 FileLoader *ConstructFileLoader(const Path &filename);
-// Resolve to the target binary, ISO, or other file (e.g. from a directory.)
-FileLoader *ResolveFileLoaderTarget(FileLoader *fileLoader);
+// Identifies the file and resolves to the target binary, ISO, or other file (e.g. from a directory.)
+FileLoader *ResolveFileLoaderTarget(FileLoader *fileLoader, IdentifiedFileType *fileType, std::string *errorString);
 
 Path ResolvePBPDirectory(const Path &filename);
 Path ResolvePBPFile(const Path &filename);
 
 IdentifiedFileType Identify_File(FileLoader *fileLoader, std::string *errorString);
 
-// Can modify the string filename, as it calls IdentifyFile above.
-bool LoadFile(FileLoader **fileLoaderPtr, std::string *error_string);
-
 bool UmdReplace(const Path &filepath, FileLoader **fileLoader, std::string &error);
+
+
+enum class ZipFileContents {
+	NOT_A_ZIP_FILE = 0,
+	UNKNOWN,
+	PSP_GAME_DIR,
+	ISO_FILE,
+	TEXTURE_PACK,
+	SAVE_DATA,
+	FRAME_DUMP,
+	SAVE_STATES,
+};
+
+struct ZipFileInfo {
+	ZipFileContents contents;
+	int numFiles;
+	int stripChars;  // for PSP game - how much to strip from the path.
+	int isoFileIndex;  // for ISO
+	int textureIniIndex;  // for textures
+	bool ignoreMetaFiles;
+	std::string gameTitle;  // from PARAM.SFO if available
+	std::string savedataTitle;
+	std::string savedataDetails;
+	std::string savedataDir;
+	std::string mTime;
+	s64 totalFileSize;
+
+	std::string contentName;
+};
+
+ZipContainer ZipOpenPath(const Path &fileName);
+void ZipClose(ZipContainer &z);
+
+bool DetectZipFileContents(const Path &fileName, ZipFileInfo *info);
+void DetectZipFileContents(zip_t *z, ZipFileInfo *info);

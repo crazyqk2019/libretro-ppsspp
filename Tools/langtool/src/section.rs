@@ -3,6 +3,8 @@
 // Just understands section headings and
 // keys and values, split by ' = '.
 
+use regex::Regex;
+
 #[derive(Debug, Clone)]
 pub struct Section {
     pub name: String,
@@ -10,7 +12,40 @@ pub struct Section {
     pub lines: Vec<String>,
 }
 
+pub fn split_line(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim();
+    if let Some(pos) = line.find(" =") {
+        let value = &line[pos + 2..];
+        if value.is_empty() {
+            return None;
+        }
+        return Some((line[0..pos].trim(), value.trim()));
+    }
+    None
+}
+
+pub fn line_value(line: &str) -> Option<&str> {
+    split_line(line).map(|tuple| tuple.1)
+}
+
 impl Section {
+	pub fn apply_regex(&mut self, key: &str, pattern: &str, replacement: &str) {
+		let re = Regex::new(pattern).unwrap();
+		for line in self.lines.iter_mut() {
+			let prefix = if let Some(pos) = line.find(" =") {
+				&line[0..pos]
+			} else {
+				continue;
+			};
+			if prefix.eq(key) {
+				if let Some((_, value)) = split_line(line) {
+					let new_value = re.replace_all(value, replacement);
+					*line = format!("{} = {}", key, new_value);
+				}
+			}
+		}
+	}
+
     pub fn remove_line(&mut self, key: &str) -> Option<String> {
         let mut remove_index = None;
         for (index, line) in self.lines.iter().enumerate() {
@@ -20,7 +55,7 @@ impl Section {
                 continue;
             };
 
-            if prefix.eq_ignore_ascii_case(key) {
+            if prefix.eq(key) {
                 remove_index = Some(index);
                 break;
             }
@@ -33,7 +68,22 @@ impl Section {
         }
     }
 
-    pub fn get_line(&mut self, key: &str) -> Option<String> {
+    pub fn remove_linebreaks(&mut self, key: &str) {
+        for line in self.lines.iter_mut() {
+            let prefix = if let Some(pos) = line.find(" =") {
+                &line[0..pos]
+            } else {
+                continue;
+            };
+            if !prefix.trim().eq(key) {
+                continue;
+            }
+            // Escaped linebreaks.
+            *line = line.replace("\\n", " ");
+        }
+    }
+
+    pub fn get_line(&self, key: &str) -> Option<String> {
         for line in self.lines.iter() {
             let prefix = if let Some(pos) = line.find(" =") {
                 &line[0..pos]
@@ -41,7 +91,7 @@ impl Section {
                 continue;
             };
 
-            if prefix.eq_ignore_ascii_case(key) {
+            if prefix.eq(key) {
                 return Some(line.clone());
             }
         }
@@ -78,7 +128,7 @@ impl Section {
         // Then, find a suitable insertion spot
         for (i, iter_line) in self.lines.iter().enumerate() {
             if iter_line.to_ascii_lowercase() > prefix {
-                println!("Inserting line {} into {}", line, self.name);
+                println!("{}: Inserting line {line}", self.name);
                 self.lines.insert(i, line.to_owned());
                 return true;
             }
@@ -88,12 +138,12 @@ impl Section {
             if self.lines[i].is_empty() {
                 continue;
             }
-            println!("Inserting line {} into {}", line, self.name);
+            println!("{}: Inserting line {line}", self.name);
             self.lines.insert(i + 1, line.to_owned());
             return true;
         }
 
-        println!("failed to insert {}", line);
+        println!("{}: failed to insert {line}", self.name);
         true
     }
 
@@ -110,7 +160,7 @@ impl Section {
             let mut right_part = line.strip_prefix(&prefix).unwrap().to_string();
             if right_part.trim() == old.trim() {
                 // Was still untranslated - replace the translation too.
-                right_part = format!(" {}", new);
+                right_part = format!(" {new}");
             }
             let line = new.to_owned() + " =" + &right_part;
             self.insert_line_if_missing(&line);
@@ -133,7 +183,7 @@ impl Section {
             let mut right_part = line.strip_prefix(&prefix).unwrap().to_string();
             if right_part.trim() == old.trim() {
                 // Was still untranslated - replace the translation too.
-                right_part = format!(" {}", new);
+                right_part = format!(" {new}");
             }
             let line = new.to_owned() + " =" + &right_part;
             self.insert_line_if_missing(&line);
@@ -187,6 +237,28 @@ impl Section {
         });
     }
 
+    pub fn get_lines_not_in(&self, other: &Section) -> Vec<String> {
+        let mut missing_lines = Vec::new();
+        // Brute force (O(n^2)). Bad but not a problem.
+        for line in &self.lines {
+            let prefix = if let Some(pos) = line.find(" =") {
+                &line[0..pos + 2]
+            } else {
+                // Keep non-key lines.
+                continue;
+            };
+            if prefix.starts_with("Font") || prefix.starts_with('#') {
+                continue;
+            }
+
+            // keeps the line if this expression returns true.
+            if !other.lines.iter().any(|line| line.starts_with(prefix)) {
+                missing_lines.push(line.clone());
+            }
+        }
+        missing_lines
+    }
+
     pub fn get_keys_if_not_in(&mut self, other: &Section) -> Vec<String> {
         let mut missing_lines = Vec::new();
         // Brute force (O(n^2)). Bad but not a problem.
@@ -207,5 +279,46 @@ impl Section {
             }
         }
         missing_lines
+    }
+
+    // Returns true if the key was found and updated.
+    pub fn set_value(&mut self, key: &str, value: &str, comment: Option<&str>) -> bool {
+        let mut found_index = None;
+        for (index, line) in self.lines.iter().enumerate() {
+            let prefix = if let Some(pos) = line.find(" =") {
+                &line[0..pos]
+            } else {
+                continue;
+            };
+
+            if prefix.eq(key) {
+                found_index = Some(index);
+                break;
+            }
+        }
+
+        if let Some(found_index) = found_index {
+            self.lines[found_index] = match comment {
+                Some(c) => format!("{} = {}  # {}", key, value, c),
+                None => format!("{} = {}", key, value),
+            };
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_value(&self, key: &str) -> Option<String> {
+        for line in &self.lines {
+            if let Some((ref_key, value)) = split_line(line) {
+                if key.eq(ref_key) {
+                    // Found it!
+                    // The value might have a comment starting with #, strip that before returning.
+                    let value = value.split('#').next().unwrap().trim();
+                    return Some(value.to_string());
+                }
+            }
+        }
+        None
     }
 }

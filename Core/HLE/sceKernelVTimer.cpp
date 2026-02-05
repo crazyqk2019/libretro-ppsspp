@@ -28,6 +28,7 @@
 #include "Core/HLE/sceKernelMemory.h"
 #include "Core/HLE/sceKernelVTimer.h"
 #include "Core/HLE/HLE.h"
+#include "Core/HLE/ErrorCodes.h"
 
 static int vtimerTimer = -1;
 static SceUID runningVTimer = 0;
@@ -64,11 +65,11 @@ struct VTimer : public KernelObject {
 		}
 	}
 
-	NativeVTimer nvt;
+	NativeVTimer nvt{};
 };
 
 KernelObject *__KernelVTimerObject() {
-	return new VTimer;
+	return new VTimer();
 }
 
 static u64 __getVTimerRunningTime(const VTimer *vt) {

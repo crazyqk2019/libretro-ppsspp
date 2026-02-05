@@ -14,7 +14,7 @@ Request::Request(RequestMethod method, std::string_view url, std::string_view na
 	: method_(method), url_(url), name_(name), progress_(cancelled), flags_(flags) {
 	INFO_LOG(Log::HTTP, "HTTP %s request: %.*s (%.*s)", RequestMethodToString(method), (int)url.size(), url.data(), (int)name.size(), name.data());
 
-	progress_.callback = [=](int64_t bytes, int64_t contentLength, bool done) {
+	progress_.callback = [this](int64_t bytes, int64_t contentLength, bool done) {
 		std::string message;
 		if (!name_.empty()) {
 			message = name_;
@@ -59,7 +59,7 @@ Path RequestManager::UrlToCachePath(const std::string_view url) {
 	return http::UrlToCachePath(cacheDir_, url);
 }
 
-std::shared_ptr<Request> CreateRequest(RequestMethod method, std::string_view url, std::string_view postdata, std::string_view postMime, const Path &outfile, RequestFlags flags, std::string_view name) {
+static std::shared_ptr<Request> CreateRequest(RequestMethod method, std::string_view url, std::string_view postdata, std::string_view postMime, const Path &outfile, RequestFlags flags, net::ResolveFunc customResolve, std::string_view name) {
 	if (IsHttpsUrl(url) && System_GetPropertyBool(SYSPROP_SUPPORTS_HTTPS)) {
 #ifndef HTTPS_NOT_AVAILABLE
 		return std::make_shared<HTTPSRequest>(method, url, postdata, postMime, outfile, flags, name);
@@ -67,18 +67,18 @@ std::shared_ptr<Request> CreateRequest(RequestMethod method, std::string_view ur
 		return std::shared_ptr<Request>();
 #endif
 	} else {
-		return std::make_shared<HTTPRequest>(method, url, postdata, postMime, outfile, flags, name);
+		return std::make_shared<HTTPRequest>(method, url, postdata, postMime, outfile, flags, customResolve, name);
 	}
 }
 
 std::shared_ptr<Request> RequestManager::StartDownload(std::string_view url, const Path &outfile, RequestFlags flags, const char *acceptMime) {
-	std::shared_ptr<Request> dl = CreateRequest(RequestMethod::GET, url, "", "", outfile, flags, "");
+	const bool enableCache = !cacheDir_.empty() && (flags & RequestFlags::Cached24H);
 
-	if (!cacheDir_.empty() && (flags & RequestFlags::Cached24H)) {
+	// Come up with a cache file path.
+	Path cacheFile = UrlToCachePath(url);
+
+	if (enableCache) {
 		_dbg_assert_(outfile.empty());  // It's automatically replaced below
-
-		// Come up with a cache file path.
-		Path cacheFile = UrlToCachePath(url);
 
 		// TODO: This should be done on the thread, maybe. But let's keep it simple for now.
 		time_t cacheFileTime;
@@ -89,24 +89,36 @@ std::shared_ptr<Request> RequestManager::StartDownload(std::string_view url, con
 				// to modify the calling code.
 				std::string contents;
 				if (File::ReadBinaryFileToString(cacheFile, &contents)) {
+					INFO_LOG(Log::sceNet, "Returning cached file for %.*s: %s", (int)url.size(), url.data(), cacheFile.c_str());
 					// All is well, but we've indented a bit much here.
-					dl.reset(new CachedRequest(RequestMethod::GET, url, "", nullptr, flags, contents));
+					std::shared_ptr<Request> dl(new CachedRequest(RequestMethod::GET, url, "infra-dns.json", nullptr, flags, contents));
 					newDownloads_.push_back(dl);
 					return dl;
+				} else {
+					INFO_LOG(Log::sceNet, "Failed reading from cache, proceeding with request");
 				}
+			} else {
+				INFO_LOG(Log::sceNet, "Cached file too old, proceeding with request");
 			}
+		} else {
+			INFO_LOG(Log::sceNet, "Failed to check time modified. Proceeding with request.");
 		}
+	}
 
-		// OK, didn't get it from cache, so let's continue with the download, putting it in the cache.
+	std::shared_ptr<Request> dl = CreateRequest(RequestMethod::GET, url, "", "", outfile, flags, nullptr, "");
+
+	// OK, didn't get it from cache, so let's continue with the download, putting it in the cache.
+	if (enableCache) {
 		dl->OverrideOutFile(cacheFile);
 		dl->AddFlag(RequestFlags::KeepInMemory);
 	}
 
-	if (!userAgent_.empty())
+	if (!userAgent_.empty()) {
 		dl->SetUserAgent(userAgent_);
-	if (acceptMime)
+	}
+	if (acceptMime) {
 		dl->SetAccept(acceptMime);
-
+	}
 	newDownloads_.push_back(dl);
 	dl->Start();
 	return dl;
@@ -119,7 +131,7 @@ std::shared_ptr<Request> RequestManager::StartDownloadWithCallback(
 	std::function<void(Request &)> callback,
 	std::string_view name,
 	const char *acceptMime) {
-	std::shared_ptr<Request> dl = CreateRequest(RequestMethod::GET, url, "", "", outfile, flags, name);
+	std::shared_ptr<Request> dl = CreateRequest(RequestMethod::GET, url, "", "", outfile, flags, nullptr, name);
 
 	if (!userAgent_.empty())
 		dl->SetUserAgent(userAgent_);
@@ -138,7 +150,7 @@ std::shared_ptr<Request> RequestManager::AsyncPostWithCallback(
 	RequestFlags flags,
 	std::function<void(Request &)> callback,
 	std::string_view name) {
-	std::shared_ptr<Request> dl = CreateRequest(RequestMethod::POST, url, postData, postMime, Path(), flags, name);
+	std::shared_ptr<Request> dl = CreateRequest(RequestMethod::POST, url, postData, postMime, Path(), flags, nullptr, name);
 	if (!userAgent_.empty())
 		dl->SetUserAgent(userAgent_);
 	dl->SetCallback(callback);
@@ -148,7 +160,7 @@ std::shared_ptr<Request> RequestManager::AsyncPostWithCallback(
 }
 
 void RequestManager::Update() {
-	for (auto iter : newDownloads_) {
+	for (auto &iter : newDownloads_) {
 		downloads_.push_back(iter);
 	}
 	newDownloads_.clear();

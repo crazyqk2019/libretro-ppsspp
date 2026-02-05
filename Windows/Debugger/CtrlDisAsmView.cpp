@@ -24,10 +24,9 @@
 #include "Common/Data/Encoding/Utf8.h"
 #include "Common/System/Display.h"
 
-#include <tchar.h>
 #include <set>
 
-TCHAR CtrlDisAsmView::szClassName[] = _T("CtrlDisAsmView");
+constexpr wchar_t *szClassName = L"CtrlDisAsmView";
 
 static constexpr UINT_PTR IDT_REDRAW = 0xC0DE0001;
 static constexpr UINT REDRAW_DELAY = 1000 / 60;
@@ -171,7 +170,7 @@ CtrlDisAsmView::CtrlDisAsmView(HWND _wnd)
 	SetWindowLong(wnd, GWL_STYLE, GetWindowLong(wnd,GWL_STYLE) | WS_VSCROLL);
 	SetScrollRange(wnd, SB_VERT, -1, 1, TRUE);
 
-	const float fontScale = 1.0f / g_display.dpi_scale_real;
+	const float fontScale = 1.0f / g_display.dpi_scale_real_y;
 	charWidth = g_Config.iFontWidth * fontScale;
 	rowHeight = (g_Config.iFontHeight + 2) * fontScale;
 	int scaledFontHeight = g_Config.iFontHeight * fontScale;
@@ -277,19 +276,19 @@ void CtrlDisAsmView::assembleOpcode(u32 address, const std::string &defaultText)
 		// try to assemble the input if it failed
 	}
 
-	result = MIPSAsm::MipsAssembleOpcode(op.c_str(), debugger, address);
+	std::string error;
+	result = MipsAssembleOpcode(op, debugger, address, &error);
 	Reporting::NotifyDebugger();
-	if (result == true)
-	{
+	if (result) {
 		scanVisibleFunctions();
 
-		if (address == curAddress)
-			gotoAddr(g_disassemblyManager.getNthNextAddress(curAddress,1));
-
+		if (address == curAddress) {
+			gotoAddr(g_disassemblyManager.getNthNextAddress(curAddress, 1));
+		}
 		redraw();
 	} else {
-		std::wstring error = ConvertUTF8ToWString(MIPSAsm::GetAssembleError());
-		MessageBox(wnd,error.c_str(),L"Error",MB_OK);
+		std::wstring werror = ConvertUTF8ToWString(error.c_str());
+		MessageBox(wnd, werror.c_str(), L"Error", MB_OK);
 	}
 }
 
@@ -299,34 +298,28 @@ void CtrlDisAsmView::drawBranchLine(HDC hdc, std::map<u32,int> &addressPositions
 	
 	int topY;
 	int bottomY;
-	if (line.first < windowStart)
-	{
+	if (line.first < windowStart) {
 		topY = -1;
-	} else if (line.first >= windowEnd)
-	{
+	} else if (line.first >= windowEnd) {
 		topY = rect.bottom+1;
 	} else {
 		topY = addressPositions[line.first] + rowHeight/2;
 	}
 			
-	if (line.second < windowStart)
-	{
+	if (line.second < windowStart) {
 		bottomY = -1;
-	} else if (line.second >= windowEnd)
-	{
+	} else if (line.second >= windowEnd) {
 		bottomY = rect.bottom+1;
 	} else {
 		bottomY = addressPositions[line.second] + rowHeight/2;
 	}
 
-	if ((topY < 0 && bottomY < 0) || (topY > rect.bottom && bottomY > rect.bottom))
-	{
+	if ((topY < 0 && bottomY < 0) || (topY > rect.bottom && bottomY > rect.bottom)) {
 		return;
 	}
 
 	// highlight line in a different color if it affects the currently selected opcode
-	if (line.first == curAddress || line.second == curAddress)
-	{
+	if (line.first == curAddress || line.second == curAddress) {
 		pen = CreatePen(0,0,0x257AFA);
 	} else {
 		pen = CreatePen(0,0,0xFF3020);
@@ -529,8 +522,8 @@ void CtrlDisAsmView::onPaint(WPARAM wParam, LPARAM lParam)
 		SetTextColor(hdc,textColor);
 
 		char addressText[64];
-		GetDisasmAddressText(address,addressText,true,line.type == DISTYPE_OPCODE, displaySymbols);
-		TextOutA(hdc,pixelPositions.addressStart,rowY1+2,addressText,(int)strlen(addressText));
+		GetDisasmAddressText(address, addressText, sizeof(addressText), true, line.type == DISTYPE_OPCODE, displaySymbols);
+		TextOutA(hdc, pixelPositions.addressStart, rowY1+2, addressText, (int)strlen(addressText));
 		
 		if (isInInterval(address,line.totalSize,debugger->GetPC()))
 		{
@@ -986,7 +979,7 @@ void CtrlDisAsmView::onMouseUp(WPARAM wParam, LPARAM lParam, int button)
 				{
 					char name[256];
 					std::string newname;
-					truncate_cpy(name, g_symbolMap->GetLabelString(funcBegin).c_str());
+					truncate_cpy(name, g_symbolMap->GetLabelString(funcBegin));
 					if (InputBox_GetString(MainWindow::GetHInstance(), MainWindow::GetHWND(), L"New function name", name, newname)) {
 						g_symbolMap->SetLabelName(newname.c_str(), funcBegin);
 						u32 funcSize = g_symbolMap->GetFunctionSize(funcBegin);
@@ -1252,7 +1245,7 @@ void CtrlDisAsmView::search(bool continueSearch)
 		g_disassemblyManager.getLine(searchAddress,displaySymbols,lineInfo, debugger);
 
 		char addressText[64];
-		GetDisasmAddressText(searchAddress,addressText,true,lineInfo.type == DISTYPE_OPCODE, displaySymbols);
+		GetDisasmAddressText(searchAddress, addressText, sizeof(addressText), true, lineInfo.type == DISTYPE_OPCODE, displaySymbols);
 
 		const char* opcode = lineInfo.name.c_str();
 		const char* arguments = lineInfo.params.c_str();

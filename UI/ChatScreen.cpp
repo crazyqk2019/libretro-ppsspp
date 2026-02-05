@@ -40,11 +40,12 @@ void ChatMenu::CreateContents(UI::ViewGroup *parent) {
 
 	if (g_Config.bEnableQuickChat) {
 		LinearLayout *quickChat = outer->Add(new LinearLayout(ORIENT_HORIZONTAL, new LayoutParams(FILL_PARENT, WRAP_CONTENT)));
-		quickChat->Add(new Button("1", new LinearLayoutParams(1.0)))->OnClick.Handle(this, &ChatMenu::OnQuickChat1);
-		quickChat->Add(new Button("2", new LinearLayoutParams(1.0)))->OnClick.Handle(this, &ChatMenu::OnQuickChat2);
-		quickChat->Add(new Button("3", new LinearLayoutParams(1.0)))->OnClick.Handle(this, &ChatMenu::OnQuickChat3);
-		quickChat->Add(new Button("4", new LinearLayoutParams(1.0)))->OnClick.Handle(this, &ChatMenu::OnQuickChat4);
-		quickChat->Add(new Button("5", new LinearLayoutParams(1.0)))->OnClick.Handle(this, &ChatMenu::OnQuickChat5);
+		for (int i = 0; i < 5; i++) {
+			std::string name = std::to_string(i + 1);
+			quickChat->Add(new Button(name, new LinearLayoutParams(1.0)))->OnClick.Add([i](UI::EventParams &e) {
+				sendChat(g_Config.sQuickChat[i]);
+			});
+		}
 	}
 	chatVert_ = scroll_->Add(new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
 	chatVert_->SetSpacing(0);
@@ -59,22 +60,22 @@ void ChatMenu::CreateSubviews(const Bounds &screenBounds) {
 	switch (g_Config.iChatScreenPosition) {
 	// the chat screen size is still static 280x240 need a dynamic size based on device resolution 
 	case 0:
-		box_ = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(width, WRAP_CONTENT, 280, NONE, NONE, 240, true));
+		box_ = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(width, WRAP_CONTENT, 280, NONE, NONE, 240, Centering::Both));
 		break;
 	case 1:
-		box_ = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(width, WRAP_CONTENT, screenBounds.centerX(), NONE, NONE, 240, true));
+		box_ = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(width, WRAP_CONTENT, screenBounds.centerX(), NONE, NONE, 240, Centering::Both));
 		break;
 	case 2:
-		box_ = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(width, WRAP_CONTENT, NONE, NONE, 280, 240, true));
+		box_ = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(width, WRAP_CONTENT, NONE, NONE, 280, 240, Centering::Both));
 		break;
 	case 3:
-		box_ = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(width, WRAP_CONTENT, 280, 240, NONE, NONE, true));
+		box_ = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(width, WRAP_CONTENT, 280, 240, NONE, NONE, Centering::Both));
 		break;
 	case 4:
-		box_ = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(width, WRAP_CONTENT, screenBounds.centerX(), 240, NONE, NONE, true));
+		box_ = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(width, WRAP_CONTENT, screenBounds.centerX(), 240, NONE, NONE, Centering::Both));
 		break;
 	case 5:
-		box_ = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(width, WRAP_CONTENT, NONE, 240, 280, NONE, true));
+		box_ = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(width, WRAP_CONTENT, NONE, 240, 280, NONE, Centering::Both));
 		break;
 	default:
 		box_ = nullptr;
@@ -96,15 +97,14 @@ void ChatMenu::CreateSubviews(const Bounds &screenBounds) {
 	UpdateChat();
 }
 
-UI::EventReturn ChatMenu::OnSubmitMessage(UI::EventParams &e) {
+void ChatMenu::OnSubmitMessage(UI::EventParams &e) {
 	std::string chat = chatEdit_->GetText();
 	chatEdit_->SetText("");
 	chatEdit_->SetFocus();
 	sendChat(chat);
-	return UI::EVENT_DONE;
 }
 
-UI::EventReturn ChatMenu::OnAskForChatMessage(UI::EventParams &e) {
+void ChatMenu::OnAskForChatMessage(UI::EventParams &e) {
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
 
 	using namespace UI;
@@ -122,37 +122,10 @@ UI::EventReturn ChatMenu::OnAskForChatMessage(UI::EventParams &e) {
 		}
 		popupScreen->OnChange.Add([=](UI::EventParams &e) {
 			sendChat(messageTemp_);
-			return UI::EVENT_DONE;
 		});
 		popupScreen->SetPopupOrigin(chatButton_);
 		screenManager_->push(popupScreen);
 	}
-	return UI::EVENT_DONE;
-}
-
-UI::EventReturn ChatMenu::OnQuickChat1(UI::EventParams &e) {
-	sendChat(g_Config.sQuickChat0);
-	return UI::EVENT_DONE;
-}
-
-UI::EventReturn ChatMenu::OnQuickChat2(UI::EventParams &e) {
-	sendChat(g_Config.sQuickChat1);
-	return UI::EVENT_DONE;
-}
-
-UI::EventReturn ChatMenu::OnQuickChat3(UI::EventParams &e) {
-	sendChat(g_Config.sQuickChat2);
-	return UI::EVENT_DONE;
-}
-
-UI::EventReturn ChatMenu::OnQuickChat4(UI::EventParams &e) {
-	sendChat(g_Config.sQuickChat3);
-	return UI::EVENT_DONE;
-}
-
-UI::EventReturn ChatMenu::OnQuickChat5(UI::EventParams &e) {
-	sendChat(g_Config.sQuickChat4);
-	return UI::EVENT_DONE;
 }
 
 void ChatMenu::UpdateChat() {
@@ -205,7 +178,7 @@ void ChatMenu::Update() {
 #if defined(USING_WIN_UI)
 	// Could remove the fullscreen check here, it works now.
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
-	if (promptInput_ && g_Config.bBypassOSKWithKeyboard && !g_Config.UseFullScreen()) {
+	if (promptInput_ && g_Config.bBypassOSKWithKeyboard && !g_Config.bFullScreen) {
 		System_InputBoxGetString(token_, n->T("Chat"), n->T("Chat Here"), false, [](const std::string &value, int) {
 			sendChat(value);
 		});

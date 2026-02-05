@@ -23,6 +23,7 @@
 #include "Common/Math/math_util.h"
 #include "Core/CoreTiming.h"
 #include "Core/HLE/HLE.h"
+#include "Core/HLE/ErrorCodes.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/HLE/sceCtrl.h"
 #include "Core/HLE/sceKernel.h"
@@ -590,12 +591,12 @@ static const HLEFunction sceCtrl[] =
 
 void Register_sceCtrl()
 {
-	RegisterModule("sceCtrl", ARRAY_SIZE(sceCtrl), sceCtrl);
+	RegisterHLEModule("sceCtrl", ARRAY_SIZE(sceCtrl), sceCtrl);
 }
 
 void Register_sceCtrl_driver()
 {
-	RegisterModule("sceCtrl_driver", ARRAY_SIZE(sceCtrl), sceCtrl);
+	RegisterHLEModule("sceCtrl_driver", ARRAY_SIZE(sceCtrl), sceCtrl);
 }
 
 u16 sceCtrlGetRightVibration() {

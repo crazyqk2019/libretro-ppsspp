@@ -31,6 +31,7 @@
 #include "Common/Serialize/SerializeMap.h"
 #include "Common/Data/Format/JSONReader.h"
 #include "Core/HLE/HLE.h"
+#include "Core/HLE/ErrorCodes.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/HLE/sceKernelMemory.h"
 #include "Core/MIPS/MIPS.h"
@@ -53,43 +54,85 @@
 #include "Core/HLE/sceNp2.h"
 #include "Core/HLE/sceNetInet.h"
 #include "Core/HLE/sceNetResolver.h"
+#include "Core/HLE/NetAdhocCommon.h"
 
+#include "Core/MIPS/MIPSCodeUtils.h" // for macros to implement __CreateHLELoop
+
+// These are all public. Should probably add accessors around these.
 bool g_netInited;
+bool g_netApctlInited;
+SceNetApctlInfoInternal netApctlInfo;
+u32 netApctlState;
+const char *const defaultNetConfigName = "NetConf";
+const char *const defaultNetSSID = "Wifi"; // fake AP/hotspot
 
-u32 netDropRate = 0;
-u32 netDropDuration = 0;
-u32 netPoolAddr = 0;
-u32 netThread1Addr = 0;
-u32 netThread2Addr = 0;
+static u32 netDropRate = 0;
+static u32 netDropDuration = 0;
+static u32 netPoolAddr = 0;
+static u32 netThread1Addr = 0;
+static u32 netThread2Addr = 0;
 
 static struct SceNetMallocStat netMallocStat;
 
 static std::map<int, ApctlHandler> apctlHandlers;
 
-const char * const defaultNetConfigName = "NetConf";
-const char * const defaultNetSSID = "Wifi"; // fake AP/hotspot
+static int netApctlInfoId = 0;
 
-int netApctlInfoId = 0;
-SceNetApctlInfoInternal netApctlInfo;
+static u32 apctlProdCodeAddr = 0;
+static u32 apctlThreadHackAddr = 0;
+static u32_le apctlThreadCode[3];
+static SceUID apctlThreadID = 0;
+static int apctlStateEvent = -1;
+static int actionAfterApctlMipsCall;
+static std::recursive_mutex apctlEvtMtx;
+static std::deque<ApctlArgs> apctlEvents;
 
-bool g_netApctlInited;
-u32 netApctlState;
-u32 apctlProdCodeAddr = 0;
-u32 apctlThreadHackAddr = 0;
-u32_le apctlThreadCode[3];
-SceUID apctlThreadID = 0;
-int apctlStateEvent = -1;
-int actionAfterApctlMipsCall;
-std::recursive_mutex apctlEvtMtx;
-std::deque<ApctlArgs> apctlEvents;
+// Currently loaded auto-config
+static InfraDNSConfig g_infraDNSConfig;
 
-// Loaded auto-config
-InfraDNSConfig g_infraDNSConfig;
+static u32 Net_Term();
+static int NetApctl_Term();
+static void NetApctl_InitDefaultInfo();
+static void NetApctl_InitInfo(int confId);
 
-u32 Net_Term();
-int NetApctl_Term();
-void NetApctl_InitDefaultInfo();
-void NetApctl_InitInfo(int confId);
+const InfraDNSConfig &GetInfraDNSConfig() {
+	return g_infraDNSConfig;
+}
+
+std::string InfraDNSConfig::ToString() const {
+	char temp[2000];
+	StringWriter w(temp);
+
+	if (!loaded) {
+		return "InfraDNSConfig not loaded.";
+	}
+	if (!gameName.empty()) {
+		w.C("Game: ").W(gameName).endl();
+	}
+	w.C("State: ");
+	switch (state) {
+	case InfraGameState::NotWorking: w.C("Not working").endl(); break;
+	case InfraGameState::Working: w.C("Working").endl(); break;
+	case InfraGameState::Unknown: w.C("Unknown").endl(); break;
+	}
+	w.C("connectAdhocForGrouping: ").B(connectAdHocForGrouping).endl();
+	w.C("DNS: ").W(dns).endl();
+	if (!dyn_dns.empty()) {
+		w.C("DynDNS: ").W(dyn_dns).endl();
+	}
+	if (!fixedDNS.empty()) {
+		w.C("Fixed DNS").endl();
+		for (const auto &iter : fixedDNS) {
+			w.F("%s -> %s", iter.first.c_str(), iter.second.c_str()).endl();
+		}
+	}
+	if (!revivalTeam.empty()) {
+		w.F("Revival team: ").W(revivalTeam).C(" (").W(revivalTeamURL).C(")").endl();
+	}
+	w.F("Comment: ").W(comment).endl();
+	return std::string(w.as_view());
+}
+
 
 bool IsNetworkConnected() {
 	// TODO: Tweak this.
@@ -107,7 +150,7 @@ bool NetworkWarnUserIfOnlineAndCantSavestate() {
 }
 
 bool NetworkWarnUserIfOnlineAndCantSpeed() {
-	if (IsNetworkConnected()) {
+	if (IsNetworkConnected() && !g_Config.bAllowSpeedControlWhileConnected) {
 		auto nw = GetI18NCategory(I18NCat::NETWORKING);
 		g_OSD.Show(OSDType::MESSAGE_INFO, nw->T("Speed controls are not available when online"), 3.0f, "speedonline");
 		return true;
@@ -117,7 +160,7 @@ bool NetworkWarnUserIfOnlineAndCantSpeed() {
 }
 
 bool NetworkAllowSpeedControl() {
-	return !IsNetworkConnected();
+	return !IsNetworkConnected() || g_Config.bAllowSpeedControlWhileConnected;
 }
 
 bool NetworkAllowSaveState() {
@@ -250,7 +293,7 @@ bool LoadDNSForGameID(std::string_view gameID, std::string_view jsonStr, InfraDN
 		dns->connectAdHocForGrouping = game.getBool("connect_adhoc_for_grouping", dns->connectAdHocForGrouping);
 		if (game.hasChild("domains", JSON_OBJECT)) {
 			const JsonGet domains = game.getDict("domains");
-			for (auto iter : domains.value_) {
+			for (const auto &iter : domains.value_) {
 				std::string domain = std::string(iter->key);
 				std::string ipAddr = std::string(iter->value.toString());
 				dns->fixedDNS[domain] = ipAddr;
@@ -270,6 +313,8 @@ bool LoadDNSForGameID(std::string_view gameID, std::string_view jsonStr, InfraDN
 	}
 
 	dns->loaded = true;
+
+	NOTICE_LOG(Log::sceNet, "Loaded DNS config from JSON: %s", dns->ToString().c_str());
 	return true;
 }
 
@@ -284,7 +329,8 @@ bool LoadAutoDNS(std::string_view json) {
 		return false;
 	}
 
-	// If dyn_dns is non-empty, try to use it to replace the specified DNS.
+	// If dyn_dns is non-empty, try to use it to replace the specified DNS server.
+	// Additionally, this removes all fixed lookups from the table.
 	// If fails, we just use the dns. TODO: Do this in the background somehow...
 	const auto &dns = g_infraDNSConfig.dns;
 	const auto &dyn_dns = g_infraDNSConfig.dyn_dns;
@@ -305,8 +351,11 @@ bool LoadAutoDNS(std::string_view json) {
 					if (inet_ntop(ptr->ai_family, &(((struct sockaddr_in*)ptr->ai_addr)->sin_addr), ipstr, sizeof(ipstr)) != 0) {
 						INFO_LOG(Log::sceNet, "Successfully resolved '%s' to '%s', overriding DNS.", dyn_dns.c_str(), ipstr);
 						if (g_infraDNSConfig.dns != ipstr) {
-							WARN_LOG(Log::sceNet, "Replacing specified DNS IP %s with dyndns %s!", g_infraDNSConfig.dns.c_str(), ipstr);
+							INFO_LOG(Log::sceNet, "Replacing specified DNS IP %s with dyndns %s!", g_infraDNSConfig.dns.c_str(), ipstr);
 							g_infraDNSConfig.dns = ipstr;
+							// If dyndns is working, we do not need the fixed lookups. So let's kick them.
+							INFO_LOG(Log::sceNet, "Clearing fixed DNS lookups.");
+							g_infraDNSConfig.fixedDNS.clear();
 						} else {
 							INFO_LOG(Log::sceNet, "DynDNS: %s already up to date", g_infraDNSConfig.dns.c_str());
 						}
@@ -339,17 +388,23 @@ void StartInfraJsonDownload() {
 		WARN_LOG(Log::sceNet, "json is already being downloaded. Still, starting a new download.");
 	}
 
-	const char *acceptMime = "application/json, text/*; q=0.9, */*; q=0.8";
-	g_infraDL = g_DownloadManager.StartDownload(jsonUrl, Path(), http::RequestFlags::Cached24H, acceptMime);
+	if (!g_Config.bDontDownloadInfraJson) {
+		const char * const acceptMime = "application/json, text/*; q=0.9, */*; q=0.8";
+		g_infraDL = g_DownloadManager.StartDownload(jsonUrl, Path(), http::RequestFlags::Cached24H, acceptMime);
+	}
 }
 
 bool PollInfraJsonDownload(std::string *jsonOutput) {
 	if (!g_Config.bInfrastructureAutoDNS) {
+		INFO_LOG(Log::sceNet, "Auto DNS disabled, returning success");
+		jsonOutput->clear();
+		// In case there's an old request, get rid of it.
+		g_infraDL.reset();
 		return true;
 	}
 
 	if (g_Config.bDontDownloadInfraJson) {
-		NOTICE_LOG(Log::sceNet, "As specified by the ini setting DontDownloadInfraJson, using infra-dns.json from /assets");
+		NOTICE_LOG(Log::sceNet, "As specified by the ini setting DontDownloadInfraJson, using infra-dns.json directly from /assets");
 		size_t jsonSize = 0;
 		std::unique_ptr<uint8_t[]> jsonStr(g_VFS.ReadFile("infra-dns.json", &jsonSize));
 		if (!jsonStr) {
@@ -357,6 +412,8 @@ bool PollInfraJsonDownload(std::string *jsonOutput) {
 			return true;  // A clear output but returning true means something vent very wrong.
 		}
 		*jsonOutput = std::string((const char *)jsonStr.get(), jsonSize);
+		// In case there's an old request, get rid of it.
+		g_infraDL.reset();
 		return true;
 	}
 
@@ -369,8 +426,12 @@ bool PollInfraJsonDownload(std::string *jsonOutput) {
 		return false;
 	}
 
+	// Steal the contents of the global.
+	std::shared_ptr<http::Request> infraDL;
+	infraDL.swap(g_infraDL);
+
 	// The request is done, but did it fail?
-	if (g_infraDL->Failed()) {
+	if (infraDL->Failed()) {
 		// First, fall back to cache if it exists. Could build this functionality into the download manager
 		// but it would be a bit awkward.
 		std::string json;
@@ -393,12 +454,63 @@ bool PollInfraJsonDownload(std::string *jsonOutput) {
 	}
 
 	// OK, we actually got data. Load it!
-	g_infraDL->buffer().TakeAll(jsonOutput);
+	infraDL->buffer().TakeAll(jsonOutput);
 	if (jsonOutput->empty()) {
 		_dbg_assert_msg_(false, "Json output is empty!");
 		ERROR_LOG(Log::sceNet, "JSON output is empty! Something went wrong.");
 	}
+
+	// The stolen download falls out of scope and gets destroyed here.
 	return true;
+}
+
+std::string ProcessHostnameWithInfraDNS(const std::string &hostname) {
+	std::string resolvedHostname = hostname;
+	
+	// Resolve any aliases. First check the ini file, then check the hardcoded DNS config.
+	auto aliasIter = g_Config.mHostToAlias.find(hostname);
+	if (aliasIter != g_Config.mHostToAlias.end()) {
+		const std::string& alias = aliasIter->second;
+		INFO_LOG(Log::sceNet, "%s - Resolved alias %s from hostname %s", __FUNCTION__, alias.c_str(), hostname.c_str());
+		resolvedHostname = alias;
+	}
+
+	if (g_Config.bInfrastructureAutoDNS) {
+		// Also look up into the preconfigured fixed DNS JSON.
+		auto fixedDNSIter = GetInfraDNSConfig().fixedDNS.find(resolvedHostname);
+		if (fixedDNSIter != GetInfraDNSConfig().fixedDNS.end()) {
+			const std::string& domainIP = fixedDNSIter->second;
+			INFO_LOG(Log::sceNet, "%s - Resolved IP %s from fixed DNS lookup with '%s'", __FUNCTION__, domainIP.c_str(), resolvedHostname.c_str());
+			resolvedHostname = domainIP;
+		}
+	}
+
+	// Check if hostname is already an IPv4 address, if so we do not need further lookup. This usually happens
+	// after the mHostToAlias or fixedDNSIter lookups, which effectively both are hardcoded DNS.
+	uint32_t resolvedAddr;
+	if (inet_pton(AF_INET, resolvedHostname.c_str(), &resolvedAddr)) {
+		INFO_LOG(Log::sceNet, "Not looking up '%s', already an IP address.", resolvedHostname.c_str());
+		return resolvedHostname;
+	}
+
+	// Now use the configured primary DNS server to do a lookup.
+	// If auto DNS, use the server from that config.
+	std::string dnsServer;
+	if (g_Config.bInfrastructureAutoDNS && !GetInfraDNSConfig().dns.empty()) {
+		dnsServer = GetInfraDNSConfig().dns;
+	} else {
+		dnsServer = g_Config.sInfrastructureDNSServer;
+	}
+
+	if (net::DirectDNSLookupIPV4(dnsServer.c_str(), resolvedHostname.c_str(), &resolvedAddr)) {
+		char temp[32];
+		inet_ntop(AF_INET, &resolvedAddr, temp, sizeof(temp));
+		INFO_LOG(Log::sceNet, "Direct lookup of '%s' from '%s' succeeded: %s", resolvedHostname.c_str(), dnsServer.c_str(), temp);
+		return std::string(temp);
+	}
+
+	WARN_LOG(Log::sceNet, "Direct DNS lookup of '%s' at DNS server '%s' failed. Will try OS DNS...", resolvedHostname.c_str(), dnsServer.c_str());
+	return resolvedHostname;
 }
 
 void InitLocalhostIP() {
@@ -409,27 +521,8 @@ void InitLocalhostIP() {
 	g_localhostIP.in.sin_addr.s_addr = htonl(localIP);
 	g_localhostIP.in.sin_port = 0;
 
-	std::string serverStr = StripSpaces(g_Config.proAdhocServer);
+	std::string serverStr(StripSpaces(g_Config.sProAdhocServer));
 	isLocalServer = (!strcasecmp(serverStr.c_str(), "localhost") || serverStr.find("127.") == 0);
-}
-
-static bool __PlatformNetInit() {
-#ifdef _WIN32
-	WSADATA wsaData;
-	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-		// TODO: log
-		return false;
-	}
-#endif
-	return true;
-}
-
-static bool __PlatformNetShutdown() {
-#ifdef _WIN32
-	return WSACleanup() == 0;
-#else
-	return true;
-#endif
 }
 
 static void __ApctlState(u64 userdata, int cyclesLate) {
@@ -483,6 +576,19 @@ static void __ResetInitNetLib() {
 	memset(&parameter, 0, sizeof(parameter));
 }
 
+u32_le __CreateHLELoop(u32_le *loopAddr, const char *sceFuncName, const char *hleFuncName, const char *tagName) {
+    if (loopAddr == NULL || sceFuncName == NULL || hleFuncName == NULL)
+        return 0;
+
+    loopAddr[0] = MIPS_MAKE_SYSCALL(sceFuncName, hleFuncName);
+    loopAddr[1] = MIPS_MAKE_B(-2);
+    loopAddr[2] = MIPS_MAKE_NOP();
+    u32 blockSize = sizeof(u32_le)*3;
+    u32_le threadHackAddress = kernelMemory.Alloc(blockSize, false, tagName); // blockSize will be rounded to 256 granularity
+    Memory::Memcpy(threadHackAddress, loopAddr, sizeof(u32_le) * 3); // This area will be cleared again after loading an old savestate :(
+    return threadHackAddress;
+}
+
 void __NetCallbackInit() {
 	// Init Network Callbacks
 	dummyThreadHackAddr = __CreateHLELoop(dummyThreadCode, "sceNetAdhoc", "__NetTriggerCallbacks", "dummythreadhack");
@@ -496,6 +602,8 @@ void __NetCallbackInit() {
 }
 
 void __NetInit() {
+	g_infraDNSConfig = InfraDNSConfig();
+
 	// Windows: Assuming WSAStartup already called beforehand
 	portOffset = g_Config.iPortOffset;
 	isOriPort = g_Config.bEnableUPnP && g_Config.bUPnPUseOriginalPort;
@@ -513,9 +621,10 @@ void __NetInit() {
 	getLocalMac(&mac);
 	INFO_LOG(Log::sceNet, "LocalHost IP will be %s [%s]", ip2str(g_localhostIP.in.sin_addr).c_str(), mac2str(&mac).c_str());
 
-	__PlatformNetInit();
-	// TODO: May be we should initialize & cleanup somewhere else than here for PortManager to be used as general purpose for whatever port forwarding PPSSPP needed
-	__UPnPInit();
+	// For libretro we don't have a better place. On other platforms, we just init/shutdown it with the rest of the emu (NativeInit / NativeShutdown).
+#ifdef __LIBRETRO__
+	__UPnPInit(2000);
+#endif
 
 	__ResetInitNetLib();
 	__NetApctlInit();
@@ -540,12 +649,14 @@ void __NetShutdown() {
 	__NetApctlShutdown();
 	__ResetInitNetLib();
 
-	// Since PortManager supposed to be general purpose for whatever port forwarding PPSSPP needed, may be we shouldn't clear & restore ports in here? it will be cleared and restored by PortManager's destructor when exiting PPSSPP anyway
+#ifdef __LIBRETRO__
 	__UPnPShutdown();
+#endif
 
-	__PlatformNetShutdown();
-
-	free(dummyPeekBuf64k);
+	if (dummyPeekBuf64k) {
+		free(dummyPeekBuf64k);
+		dummyPeekBuf64k = NULL;
+	}
 }
 
 static void __UpdateApctlHandlers(u32 oldState, u32 newState, u32 flag, u32 error) {
@@ -837,7 +948,7 @@ static u32 sceNetTerm() {
 
 	// Give time to make sure everything are cleaned up
 	hleEatMicro(adhocDefaultDelay);
-	return hleLogWarning(Log::sceNet, retval, "at %08x", currentMIPS->pc);
+	return hleLogInfo(Log::sceNet, retval);
 }
 
 /*
@@ -886,7 +997,7 @@ static int sceNetInit(u32 poolSize, u32 calloutPri, u32 calloutStack, u32 netini
 		return hleLogError(Log::sceNet, SCE_KERNEL_ERROR_NO_MEMORY, "unable to allocate pool");
 	}
 
-	WARN_LOG(Log::sceNet, "sceNetInit(poolsize=%d, calloutpri=%i, calloutstack=%d, netintrpri=%i, netintrstack=%d) at %08x", poolSize, calloutPri, calloutStack, netinitPri, netinitStack, currentMIPS->pc);
+	INFO_LOG(Log::sceNet, "sceNetInit(poolsize=%d, calloutpri=%i, calloutstack=%d, netintrpri=%i, netintrstack=%d) at %08x", poolSize, calloutPri, calloutStack, netinitPri, netinitStack, currentMIPS->pc);
 	
 	netMallocStat.pool = poolSize - 0x20; // On Vantage Master Portable this is slightly (32 bytes) smaller than the poolSize arg when tested with JPCSP + prx files
 	netMallocStat.maximum = 0x4050; // Dummy maximum foot print
@@ -1088,7 +1199,7 @@ void NetApctl_InitInfo(int confId) {
 
 static int sceNetApctlInit(int stackSize, int initPriority) {
 	if (g_netApctlInited) {
-		return hleLogError(Log::sceNet, ERROR_NET_APCTL_ALREADY_INITIALIZED);
+		return hleLogError(Log::sceNet, SCE_NET_APCTL_ERROR_ALREADY_INITIALIZED);
 	}
 
 	apctlEvents.clear();
@@ -1147,6 +1258,9 @@ int NetApctl_Term() {
 		__KernelDeleteThread(apctlThreadID, SCE_KERNEL_ERROR_THREAD_TERMINATED, "ApctlThread deleted");
 		apctlThreadID = 0;
 	}
+
+	// Clear out handlers.
+	apctlHandlers.clear();
 
 	g_netApctlInited = false;
 	netApctlState = PSP_NET_APCTL_STATE_DISCONNECTED;
@@ -1287,7 +1401,7 @@ static int sceNetApctlGetInfo(int code, u32 pInfoAddr) {
 		NotifyMemInfo(MemBlockFlags::WRITE, pInfoAddr, 4, "NetApctlGetInfo");
 		break;
 	default:
-		return hleLogError(Log::sceNet, ERROR_NET_APCTL_INVALID_CODE, "apctl invalid code");
+		return hleLogError(Log::sceNet, SCE_NET_APCTL_ERROR_INVALID_CODE, "apctl invalid code");
 	}
 
 	return hleLogDebug(Log::sceNet, 0);
@@ -1315,11 +1429,11 @@ static int NetApctl_AddHandler(u32 handlerPtr, u32 handlerArg) {
 	if (!foundHandler && Memory::IsValidAddress(handlerPtr)) {
 		if (apctlHandlers.size() >= MAX_APCTL_HANDLERS) {
 			ERROR_LOG(Log::sceNet, "Failed to Add handler(%x, %x): Too many handlers", handlerPtr, handlerArg);
-			retval = ERROR_NET_ADHOCCTL_TOO_MANY_HANDLERS; // TODO: What's the proper error code for Apctl's TOO_MANY_HANDLERS?
+			retval = SCE_NET_ADHOCCTL_ERROR_TOO_MANY_HANDLERS; // TODO: What's the proper error code for Apctl's TOO_MANY_HANDLERS?
 			return retval;
 		}
 		apctlHandlers[retval] = handler;
-		WARN_LOG(Log::sceNet, "Added Apctl handler(%x, %x): %d", handlerPtr, handlerArg, retval);
+		INFO_LOG(Log::sceNet, "Added Apctl handler(%x, %x): %d", handlerPtr, handlerArg, retval);
 	}
 	else {
 		ERROR_LOG(Log::sceNet, "Existing Apctl handler(%x, %x)", handlerPtr, handlerArg);
@@ -1354,10 +1468,10 @@ static int sceNetApctlDelHandler(u32 handlerID) {
 
 int sceNetApctlConnect(int confId) {
 	if (!g_Config.bEnableWlan)
-		return hleLogError(Log::sceNet, ERROR_NET_APCTL_WLAN_SWITCH_OFF, "apctl wlan off");
+		return hleLogError(Log::sceNet, SCE_NET_APCTL_ERROR_WLAN_SWITCH_OFF);
 
 	if (netApctlState != PSP_NET_APCTL_STATE_DISCONNECTED)
-		return hleLogError(Log::sceNet, ERROR_NET_APCTL_NOT_DISCONNECTED, "apctl not disconnected");
+		return hleLogError(Log::sceNet, SCE_NET_APCTL_ERROR_NOT_DISCONNECTED);
 
 	// Is this confId is the index to the scanning's result data or sceNetApctlGetBSSDescIDListUser result?
 	netApctlInfoId = confId;
@@ -1401,7 +1515,7 @@ bool __NetApctlConnected() {
 }
 
 static int sceNetApctlGetState(u32 pStateAddr) {
-	//if (!netApctlInited) return hleLogError(Log::sceNet, ERROR_NET_APCTL_NOT_IN_BSS, "apctl not in bss");
+	//if (!netApctlInited) return hleLogError(Log::sceNet, SCE_NET_APCTL_ERROR_NOT_IN_BSS, "apctl not in bss");
 
 	// Valid Arguments
 	if (Memory::IsValidAddress(pStateAddr)) {
@@ -1417,11 +1531,11 @@ static int sceNetApctlGetState(u32 pStateAddr) {
 // This one logs like a syscall because it's called at the end of some.
 int NetApctl_ScanUser() {
 	if (!g_Config.bEnableWlan)
-		return hleLogError(Log::sceNet, ERROR_NET_APCTL_WLAN_SWITCH_OFF, "apctl wlan off");
+		return hleLogError(Log::sceNet, SCE_NET_APCTL_ERROR_WLAN_SWITCH_OFF);
 
 	// Scan probably only works when not in connected state, right?
 	if (netApctlState != PSP_NET_APCTL_STATE_DISCONNECTED)
-		return hleLogError(Log::sceNet, ERROR_NET_APCTL_NOT_DISCONNECTED, "apctl not disconnected");
+		return hleLogError(Log::sceNet, SCE_NET_APCTL_ERROR_NOT_DISCONNECTED);
 
 	__UpdateApctlHandlers(0, PSP_NET_APCTL_STATE_SCANNING, PSP_NET_APCTL_EVENT_SCAN_REQUEST, 0);
 	return hleLogInfo(Log::sceNet, 0);
@@ -1535,7 +1649,7 @@ int NetApctl_GetBSSDescEntryUser(int entryId, int infoId, u32 resultAddr) {
 		Memory::Write_U32(netApctlInfo.securityType, resultAddr);
 		break;
 	default:
-		return hleLogError(Log::sceNet, ERROR_NET_APCTL_INVALID_CODE, "unknown info id");
+		return hleLogError(Log::sceNet, SCE_NET_APCTL_ERROR_INVALID_CODE, "unknown info id");
 	}
 
 	return 0;
@@ -1719,21 +1833,21 @@ const HLEFunction sceNetIfhandle[] = {
 };
 
 void Register_sceNet() {
-	RegisterModule("sceNet", ARRAY_SIZE(sceNet), sceNet);
+	RegisterHLEModule("sceNet", ARRAY_SIZE(sceNet), sceNet);
 }
 
 void Register_sceNetApctl() {
-	RegisterModule("sceNetApctl", ARRAY_SIZE(sceNetApctl), sceNetApctl);
+	RegisterHLEModule("sceNetApctl", ARRAY_SIZE(sceNetApctl), sceNetApctl);
 }
 
 void Register_sceWlanDrv() {
-	RegisterModule("sceWlanDrv", ARRAY_SIZE(sceWlanDrv), sceWlanDrv);
+	RegisterHLEModule("sceWlanDrv", ARRAY_SIZE(sceWlanDrv), sceWlanDrv);
 }
 
 void Register_sceNetUpnp() {
-	RegisterModule("sceNetUpnp", ARRAY_SIZE(sceNetUpnp), sceNetUpnp);
+	RegisterHLEModule("sceNetUpnp", ARRAY_SIZE(sceNetUpnp), sceNetUpnp);
 }
 
 void Register_sceNetIfhandle() {
-	RegisterModule("sceNetIfhandle", ARRAY_SIZE(sceNetIfhandle), sceNetIfhandle);
+	RegisterHLEModule("sceNetIfhandle", ARRAY_SIZE(sceNetIfhandle), sceNetIfhandle);
 }

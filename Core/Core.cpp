@@ -26,6 +26,7 @@
 #include "Common/Profiler/Profiler.h"
 
 #include "Common/GraphicsContext.h"
+#include "Common/Thread/ThreadUtil.h"
 #include "Common/Log.h"
 #include "Core/Core.h"
 #include "Core/Config.h"
@@ -73,8 +74,8 @@ static int steppingCounter = 0;
 static std::set<CoreLifecycleFunc> lifecycleFuncs;
 
 // This can be read and written from ANYWHERE.
-volatile CoreState coreState = CORE_STEPPING_CPU;
-CoreState preGeCoreState = CORE_BOOT_ERROR;
+volatile CoreState coreState = CORE_POWERDOWN;
+CoreState preGeCoreState = CORE_POWERDOWN;
 // If true, core state has been changed, but JIT has probably not noticed yet.
 volatile bool coreStatePending = false;
 
@@ -89,6 +90,19 @@ static bool Core_ProcessStepping(MIPSDebugInterface *cpu);
 
 BreakReason Core_BreakReason() {
 	return g_breakReason;
+}
+
+const char *CoreStateToString(CoreState state) {
+	switch (state) {
+	case CORE_RUNNING_CPU: return "RUNNING_CPU";
+	case CORE_NEXTFRAME: return "NEXTFRAME";
+	case CORE_STEPPING_CPU: return "STEPPING_CPU";
+	case CORE_POWERDOWN: return "POWERDOWN";
+	case CORE_RUNTIME_ERROR: return "RUNTIME_ERROR";
+	case CORE_STEPPING_GE: return "STEPPING_GE";
+	case CORE_RUNNING_GE: return "RUNNING_GE";
+	default: return "N/A";
+	}
 }
 
 const char *BreakReasonToString(BreakReason reason) {
@@ -145,21 +159,25 @@ void Core_Stop() {
 }
 
 void Core_UpdateState(CoreState newState) {
-	if ((coreState == CORE_RUNNING_CPU || coreState == CORE_NEXTFRAME) && newState != CORE_RUNNING_CPU)
+	const CoreState state = coreState;
+	if ((state == CORE_RUNNING_CPU || state == CORE_NEXTFRAME) && newState != CORE_RUNNING_CPU)
 		coreStatePending = true;
 	coreState = newState;
 }
 
 bool Core_IsStepping() {
-	return coreState == CORE_STEPPING_CPU || coreState == CORE_POWERDOWN;
+	const CoreState state = coreState;
+	return state == CORE_STEPPING_CPU || state == CORE_STEPPING_GE || state == CORE_POWERDOWN;
 }
 
 bool Core_IsActive() {
-	return coreState == CORE_RUNNING_CPU || coreState == CORE_NEXTFRAME || coreStatePending;
+	const CoreState state = coreState;
+	return state == CORE_RUNNING_CPU || state == CORE_NEXTFRAME || coreStatePending;
 }
 
 bool Core_IsInactive() {
-	return coreState != CORE_RUNNING_CPU && coreState != CORE_NEXTFRAME && !coreStatePending;
+	const CoreState state = coreState;
+	return state != CORE_RUNNING_CPU && state != CORE_NEXTFRAME && !coreStatePending;
 }
 
 void Core_StateProcessed() {
@@ -173,7 +191,7 @@ void Core_StateProcessed() {
 void Core_WaitInactive() {
 	while (Core_IsActive() && !GPUStepping::IsStepping()) {
 		std::unique_lock<std::mutex> guard(m_hInactiveMutex);
-		m_InactiveCond.wait(guard);
+		m_InactiveCond.wait_for(guard, std::chrono::seconds(1));
 	}
 }
 
@@ -188,9 +206,7 @@ bool Core_GetPowerSaving() {
 void Core_RunLoopUntil(u64 globalticks) {
 	while (true) {
 		switch (coreState) {
-		case CORE_POWERUP:
 		case CORE_POWERDOWN:
-		case CORE_BOOT_ERROR:
 		case CORE_RUNTIME_ERROR:
 		case CORE_NEXTFRAME:
 			return;
@@ -213,16 +229,13 @@ void Core_RunLoopUntil(u64 globalticks) {
 			case DLResult::DebugBreak:
 				GPUStepping::EnterStepping(coreState);
 				break;
-			case DLResult::Error:
-				// We should elegantly report the error somehow, or I guess ignore it.
+
+			case DLResult::Error: // We should elegantly report the error somehow, or I guess ignore it.
+			case DLResult::Done: // Done executing for now
 				hleFinishSyscallAfterGe();
 				coreState = preGeCoreState;
 				break;
-			case DLResult::Done:
-				// Done executing for now
-				hleFinishSyscallAfterGe();
-				coreState = preGeCoreState;
-				break;
+
 			default:
 				// Not a valid return value.
 				_dbg_assert_(false);
@@ -412,8 +425,14 @@ static bool Core_ProcessStepping(MIPSDebugInterface *cpu) {
 
 // Free-threaded (hm, possibly except tracing).
 void Core_Break(BreakReason reason, u32 relatedAddress) {
-	if (coreState != CORE_RUNNING_CPU) {
-		ERROR_LOG(Log::CPU, "Core_Break only works in the CORE_RUNNING_CPU state");
+	const CoreState state = coreState;
+	if (state != CORE_RUNNING_CPU) {
+		if (state == CORE_STEPPING_CPU) {
+			// Already stepping.
+			INFO_LOG(Log::CPU, "Core_Break(%s), already in break mode", BreakReasonToString(reason));
+			return;
+		}
+		WARN_LOG(Log::CPU, "Core_Break(%s) only works in the CORE_RUNNING_CPU state (was in state %s)", BreakReasonToString(reason), CoreStateToString(state));
 		return;
 	}
 
@@ -427,7 +446,7 @@ void Core_Break(BreakReason reason, u32 relatedAddress) {
 				// Allow overwriting the command.
 				break;
 			default:
-				ERROR_LOG(Log::CPU, "Core_Break called with a step-command already in progress: %s", BreakReasonToString(g_cpuStepCommand.reason));
+				ERROR_LOG(Log::CPU, "Core_Break(%s) called with a step-command already in progress", BreakReasonToString(g_cpuStepCommand.reason));
 				return;
 			}
 		}

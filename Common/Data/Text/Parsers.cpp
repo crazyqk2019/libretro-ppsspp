@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdarg>
 #include <climits>
 #include <cstdio>
@@ -33,9 +34,9 @@ std::string NiceSizeFormat(uint64_t size) {
 
 std::string NiceTimeFormat(int seconds) {
 	auto di = GetI18NCategory(I18NCat::DIALOG);
-	if (seconds < 60) {
+	if (seconds < 120) {
 		return StringFromFormat(di->T_cstr("%d seconds"), seconds);
-	} else if (seconds < 60 * 60) {
+	} else if (seconds < 120 * 60) {
 		int minutes = seconds / 60;
 		return StringFromFormat(di->T_cstr("%d minutes"), minutes);
 	} else {
@@ -166,7 +167,8 @@ StringWriter &StringWriter::F(const char *format, ...) {
 	}
 	va_list args;
 	va_start(args, format);
-	p_ += vsnprintf(p_, remainder, format, args);
+	int wouldHaveBeenWritten = vsnprintf(p_, remainder, format, args);
+	p_ += std::min((int)remainder, wouldHaveBeenWritten);
 	va_end(args);
 	return *this;
 }

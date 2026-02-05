@@ -26,7 +26,7 @@
 #include "Common/UI/View.h"
 #include "Common/UI/ViewGroup.h"
 
-#include "UI/MiscScreens.h"
+#include "UI/BaseScreens.h"
 #include "UI/GameInfoCache.h"
 #include "UI/TabbedDialogScreen.h"
 
@@ -56,7 +56,7 @@ private:
 	static bool ByDate(const UI::View *, const UI::View *);
 
 	void Refresh();
-	UI::EventReturn SavedataButtonClick(UI::EventParams &e);
+	void SavedataButtonClick(UI::EventParams &e);
 
 	SavedataSortOption sortOption_ = SavedataSortOption::FILENAME;
 	UI::ViewGroup *gameList_ = nullptr;
@@ -67,10 +67,10 @@ private:
 	bool searchPending_ = false;
 };
 
-class SavedataScreen : public TabbedUIDialogScreenWithGameBackground {
+class SavedataScreen : public UITabbedBaseDialogScreen {
 public:
 	// gamePath can be empty, in that case this screen will show all savedata in the save directory.
-	SavedataScreen(const Path &gamePath) : TabbedUIDialogScreenWithGameBackground(gamePath) {}
+	SavedataScreen(const Path &gamePath) : UITabbedBaseDialogScreen(gamePath) {}
 	~SavedataScreen();
 
 	void dialogFinished(const Screen *dialog, DialogResult result) override;
@@ -80,38 +80,21 @@ public:
 
 protected:
 	void CreateTabs() override;
-	void CreateExtraButtons(UI::LinearLayout *verticalLayout, int margins) override;
+	void CreateExtraButtons(UI::ViewGroup *verticalLayout, int margins) override;
 
 	bool ShowSearchControls() const override { return false; }
-
+	
 private:
-	UI::EventReturn OnSavedataButtonClick(UI::EventParams &e);
-	UI::EventReturn OnSearch(UI::EventParams &e);
+	void OnSavedataButtonClick(UI::EventParams &e);
+	void OnSearch(UI::EventParams &e);
 
 	void CreateSavedataTab(UI::ViewGroup *savedata);
 	void CreateSavestateTab(UI::ViewGroup *savestate);
 
-	bool gridStyle_ = false;
 	SavedataSortOption sortOption_ = SavedataSortOption::FILENAME;
 	SavedataBrowser *dataBrowser_ = nullptr;
 	SavedataBrowser *stateBrowser_ = nullptr;
 	std::string searchFilter_;
-};
-
-class GameIconView : public UI::InertView {
-public:
-	GameIconView(const Path &gamePath, float scale, UI::LayoutParams *layoutParams = 0)
-		: InertView(layoutParams), gamePath_(gamePath), scale_(scale) {}
-
-	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
-	void Draw(UIContext &dc) override;
-	std::string DescribeText() const override { return ""; }
-
-private:
-	Path gamePath_;
-	float scale_ = 1.0f;
-	int textureWidth_ = 0;
-	int textureHeight_ = 0;
 };
 
 class SavedataButton : public UI::Clickable {

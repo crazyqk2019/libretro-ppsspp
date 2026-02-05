@@ -5,12 +5,25 @@
 //  Created by Serena on 20/01/2023.
 //
 
-#include "ppsspp_config.h"
-#include "Core/Config.h"
-#include "Common/Log.h"
-#include "DarwinFileSystemServices.h"
+// NOTES:
+// Files inside the app folder opened in iOS via the document picker end up with this path:
+// /private/var/mobile/Containers/Data/Application/<UUID>/Documents
+// However, when we query the home directory we get:
+// /var/mobile/Containers/Data/Application/<UUID>/Documents
+// The /private prefix seems to be optional, so we strip it off before returning it.
+
+
 #include <dispatch/dispatch.h>
 #include <CoreServices/CoreServices.h>
+
+#include "ppsspp_config.h"
+
+#include "Common/Log.h"
+#include "Common/StringUtils.h"
+
+#include "Core/Config.h"
+
+#include "DarwinFileSystemServices.h"
 
 #if !__has_feature(objc_arc)
 #error Must be built with ARC, please revise the flags for DarwinFileSystemServices.mm to include -fobjc-arc.
@@ -41,8 +54,14 @@ void DarwinFileSystemServices::ClearDelegate() {
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+	std::string pathStr = urls[0].path.UTF8String;
+	// Strip /private prefix if present.
+	if (startsWith(pathStr, "/private/var/mobile/Containers/Data/Application/")) {
+		pathStr = pathStr.substr(8);
+	}
+
 	if (urls.count >= 1)
-		self.panelCallback(true, Path(urls[0].path.UTF8String));
+		self.panelCallback(true, Path(pathStr));
 	else
 		self.panelCallback(false, Path());
 
@@ -76,7 +95,7 @@ void DarwinFileSystemServices::presentDirectoryPanel(
 		panel.canChooseDirectories = allowDirectories;
 		switch (fileType) {
 		case BrowseFileType::BOOTABLE:
-			[panel setAllowedFileTypes:[NSArray arrayWithObjects:@"iso", @"cso", @"pbp", @"elf", @"zip", @"ppdmp", nil]];
+			[panel setAllowedFileTypes:[NSArray arrayWithObjects:@"iso", @"cso", @"chd", @"pbp", @"elf", @"zip", @"ppdmp", @"prx", nil]];
 			break;
 		case BrowseFileType::IMAGE:
 			[panel setAllowedFileTypes:[NSArray arrayWithObjects:@"jpg", @"png", nil]];
@@ -88,7 +107,13 @@ void DarwinFileSystemServices::presentDirectoryPanel(
 			[panel setAllowedFileTypes:[NSArray arrayWithObject:@"db"]];
 			break;
 		case BrowseFileType::SOUND_EFFECT:
-			[panel setAllowedFileTypes:[NSArray arrayWithObject:@"wav"]];
+			[panel setAllowedFileTypes:[NSArray arrayWithObjects:@"wav", @"mp3", nil]];
+			break;
+		case BrowseFileType::SYMBOL_MAP:
+			[panel setAllowedFileTypes:[NSArray arrayWithObject:@"ppsym"]];
+			break;
+		case BrowseFileType::SYMBOL_MAP_NOCASH:
+			[panel setAllowedFileTypes:[NSArray arrayWithObject:@"sym"]];
 			break;
 		case BrowseFileType::ATRAC3:
 			[panel setAllowedFileTypes:[NSArray arrayWithObject:@"at3"]];
@@ -113,21 +138,23 @@ void DarwinFileSystemServices::presentDirectoryPanel(
 		UIViewController *rootViewController = UIApplication.sharedApplication
 			.keyWindow
 			.rootViewController;
-		
+
 		// get current window view controller
 		if (!rootViewController)
 			return;
-		
+
 		NSMutableArray<NSString *> *types = [NSMutableArray array];
 		UIDocumentPickerMode pickerMode = UIDocumentPickerModeOpen;
-		
+
 		if (allowDirectories)
 			[types addObject: (__bridge NSString *)kUTTypeFolder];
 		if (allowFiles) {
 			[types addObject: (__bridge NSString *)kUTTypeItem];
-			pickerMode = UIDocumentPickerModeImport;
+			// NOTE: We do not want to copy files here - we handle it ourselves if needed.
+			// Previously this was Import mode.
+			pickerMode = UIDocumentPickerModeOpen;
 		}
-		
+
 		UIDocumentPickerViewController *pickerVC = [[UIDocumentPickerViewController alloc] initWithDocumentTypes: types inMode: pickerMode];
 		// What if you wanted to go to heaven, but then God showed you the next few lines?
 		// serious note: have to do this, because __pickerDelegate has to stay retained as a class property
@@ -142,7 +169,7 @@ Path DarwinFileSystemServices::appropriateMemoryStickDirectoryToUse() {
     NSString *userPreferred = [[NSUserDefaults standardUserDefaults] stringForKey:@(PreferredMemoryStickUserDefaultsKey)];
     if (userPreferred)
         return Path(userPreferred.UTF8String);
-    
+
     return defaultMemoryStickPath();
 }
 

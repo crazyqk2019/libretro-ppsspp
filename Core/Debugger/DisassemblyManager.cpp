@@ -27,6 +27,7 @@
 #include "Common/Data/Encoding/Utf8.h"
 #include "Common/Log.h"
 #include "Common/StringUtils.h"
+#include "Common/Math/math_util.h"
 #include "Core/MemMap.h"
 #include "Core/System.h"
 #include "Core/MIPS/MIPSDebugInterface.h"
@@ -43,7 +44,7 @@ bool isInInterval(u32 start, u32 size, u32 value) {
 }
 
 bool IsLikelyStringAt(uint32_t addr) {
-	uint32_t maxLen = Memory::ValidSize(addr, 128);
+	uint32_t maxLen = Memory::ClampValidSizeAt(addr, 128);
 	if (maxLen <= 1)
 		return false;
 	const char *p = Memory::GetCharPointer(addr);
@@ -91,7 +92,7 @@ static HashType computeHash(u32 address, u32 size)
 	if (!Memory::IsValidAddress(address))
 		return 0;
 
-	size = Memory::ValidSize(address, size);
+	size = Memory::ClampValidSizeAt(address, size);
 #if PPSSPP_ARCH(AMD64)
 	return XXH3_64bits(Memory::GetPointerUnchecked(address), size);
 #else
@@ -191,12 +192,12 @@ void DisassemblyManager::analyze(u32 address, u32 size = 1024)
 {
 	u32 end = address+size;
 
-	address &= ~3;
+	address = RoundDownToMultipleOf(address, 4);
 	u32 start = address;
 
 	while (address < end && start <= address)
 	{
-		if (!PSP_IsInited())
+		if (PSP_GetBootState() != BootState::Complete)
 			return;
 
 		std::lock_guard<std::recursive_mutex> guard(entriesLock_);
@@ -406,7 +407,7 @@ void DisassemblyManager::clear()
 
 DisassemblyFunction::DisassemblyFunction(u32 _address, u32 _size): address(_address), size(_size)
 {
-	if (!PSP_IsInited())
+	if (PSP_GetBootState() != BootState::Complete)
 		return;
 
 	hash = computeHash(address,size);
@@ -419,7 +420,7 @@ DisassemblyFunction::~DisassemblyFunction() {
 
 void DisassemblyFunction::recheck()
 {
-	if (!PSP_IsInited())
+	if (PSP_GetBootState() != BootState::Complete)
 		return;
 
 	HashType newHash = computeHash(address,size);
@@ -872,14 +873,14 @@ bool DisassemblyMacro::disassemble(u32 address, DisassemblyLineInfo &dest, bool 
 
 DisassemblyData::DisassemblyData(u32 _address, u32 _size, DataType _type): address(_address), size(_size), type(_type)
 {
-	_dbg_assert_(PSP_IsInited());
+	_dbg_assert_(PSP_GetBootState() == BootState::Complete);
 	hash = computeHash(address,size);
 	createLines();
 }
 
 void DisassemblyData::recheck()
 {
-	if (!PSP_IsInited())
+	if (PSP_GetBootState() != BootState::Complete)
 		return;
 
 	HashType newHash = computeHash(address,size);
@@ -1093,7 +1094,11 @@ bool DisassemblyComment::disassemble(u32 address, DisassemblyLineInfo &dest, boo
 	return true;
 }
 
-bool GetDisasmAddressText(u32 address, char* dest, bool abbreviateLabels, bool showData, bool displaySymbols) {
+bool GetDisasmAddressText(u32 address, char *dest, size_t bufSize, bool abbreviateLabels, bool showData, bool displaySymbols) {
+	if (!Memory::IsValid4AlignedAddress(address)) {
+		snprintf(dest, bufSize, "(bad address!)");
+		return true;
+	}
 	if (displaySymbols) {
 		const std::string addressSymbol = g_symbolMap->GetLabelString(address);
 		if (!addressSymbol.empty()) {
@@ -1109,15 +1114,15 @@ bool GetDisasmAddressText(u32 address, char* dest, bool abbreviateLabels, bool s
 			*dest = 0;
 			return true;
 		} else {
-			sprintf(dest,"    %08X",address);
+			snprintf(dest, bufSize, "    %08X",address);
 			return false;
 		}
 	} else {
 		if (showData) {
-			u32 encoding = Memory::IsValidAddress(address) ? Memory::Read_Instruction(address, true).encoding : 0;
-			sprintf(dest, "%08X %08X", address, encoding);
+			const u32 encoding = Memory::Read_Instruction(address, true).encoding;
+			snprintf(dest, bufSize, "%08X %08X", address, encoding);
 		} else {
-			sprintf(dest, "%08X", address);
+			snprintf(dest, bufSize, "%08X", address);
 		}
 		return false;
 	}
@@ -1147,28 +1152,28 @@ std::string DisassembleRange(u32 start, u32 size, bool displaySymbols, MIPSDebug
 		char addressText[64], buffer[512];
 
 		g_disassemblyManager.getLine(disAddress, displaySymbols, line, debugger);
-		bool isLabel = GetDisasmAddressText(disAddress, addressText, false, line.type == DISTYPE_OPCODE, displaySymbols);
+		bool isLabel = GetDisasmAddressText(disAddress, addressText, sizeof(addressText), false, line.type == DISTYPE_OPCODE, displaySymbols);
 
 		if (isLabel) {
 			if (!previousLabel)
 				result += "\r\n";
-			sprintf(buffer, "%s\r\n\r\n", addressText);
+			snprintf(buffer, sizeof(buffer), "%s\r\n\r\n", addressText);
 			result += buffer;
 		} else if (branchAddresses.find(disAddress) != branchAddresses.end()) {
 			if (!previousLabel)
 				result += "\r\n";
-			sprintf(buffer, "pos_%08X:\r\n\r\n", disAddress);
+			snprintf(buffer, sizeof(buffer), "pos_%08X:\r\n\r\n", disAddress);
 			result += buffer;
 		}
 
 		if (line.info.isBranch && !line.info.isBranchToRegister
 			&& g_symbolMap->GetLabelString(line.info.branchTarget).empty()
 			&& branchAddresses.find(line.info.branchTarget) != branchAddresses.end()) {
-			sprintf(buffer, "pos_%08X", line.info.branchTarget);
+			snprintf(buffer, sizeof(buffer), "pos_%08X", line.info.branchTarget);
 			line.params = line.params.substr(0, line.params.find("0x")) + buffer;
 		}
 
-		sprintf(buffer, "\t%s\t%s\r\n", line.name.c_str(), line.params.c_str());
+		snprintf(buffer, sizeof(buffer), "\t%s\t%s\r\n", line.name.c_str(), line.params.c_str());
 		result += buffer;
 		previousLabel = isLabel;
 		disAddress += line.totalSize;

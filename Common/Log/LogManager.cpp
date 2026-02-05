@@ -41,11 +41,13 @@
 #include "Common/Data/Format/IniFile.h"
 #include "Common/StringUtils.h"
 
+LogChannel g_log[(size_t)Log::NUMBER_OF_LOGS];
 LogManager g_logManager;
 
 const char *hleCurrentThreadName = nullptr;
 
-bool *g_bLogEnabledSetting = nullptr;
+bool g_bDummySetting = true;
+bool *g_bLogEnabledSetting = &g_bDummySetting;
 
 static const char level_to_char[8] = "-NEWIDV";
 
@@ -59,17 +61,11 @@ static const char level_to_char[8] = "-NEWIDV";
 void AndroidLog(const LogMessage &message);
 #endif
 
-void GenericLog(LogLevel level, Log type, const char *file, int line, const char* fmt, ...) {
-	if (g_bLogEnabledSetting && !(*g_bLogEnabledSetting))
-		return;
+void GenericLog(Log type, LogLevel level, const char *file, int line, const char* fmt, ...) {
 	va_list args;
 	va_start(args, fmt);
 	g_logManager.LogLine(level, type, file, line, fmt, args);
 	va_end(args);
-}
-
-bool GenericLogEnabled(LogLevel level, Log type) {
-	return (*g_bLogEnabledSetting) && g_logManager.IsEnabled(level, type);
 }
 
 // NOTE: Needs to be kept in sync with the Log enum.
@@ -83,7 +79,9 @@ static const char * const g_logTypeNames[] = {
 	"HLE",
 	"JIT",
 	"LOADER",
-	"ME",  // Media Engine
+	"MPEG",
+	"ATRAC",
+	"ME",  // Rest of the media Engine
 	"MEMMAP",
 	"SASMIX",
 	"SAVESTATE",
@@ -95,6 +93,9 @@ static const char * const g_logTypeNames[] = {
 	"PRINTF",
 	"TEXREPLACE",
 	"DEBUGGER",
+	"GEDEBUGGER",
+	"UI",
+	"IAP",
 	"SCEAUDIO",
 	"SCECTRL",
 	"SCEDISP",
@@ -109,6 +110,7 @@ static const char * const g_logTypeNames[] = {
 	"SCESAS",
 	"SCEUTIL",
 	"SCEMISC",
+	"SCEREG",
 };
 
 const char *LogManager::GetLogTypeName(Log type) {
@@ -127,11 +129,11 @@ void LogManager::Init(bool *enabledSetting, bool headless) {
 	initialized_ = true;
 
 	_dbg_assert_(ARRAY_SIZE(g_logTypeNames) == (size_t)Log::NUMBER_OF_LOGS);
-	_dbg_assert_(ARRAY_SIZE(g_logTypeNames) == ARRAY_SIZE(log_));
+	_dbg_assert_(ARRAY_SIZE(g_logTypeNames) == ARRAY_SIZE(g_log));
 
-	for (size_t i = 0; i < ARRAY_SIZE(log_); i++) {
-		log_[i].enabled = true;
-		log_[i].level = LogLevel::LINFO;
+	for (size_t i = 0; i < ARRAY_SIZE(g_log); i++) {
+		g_log[i].enabled = true;
+		g_log[i].level = LogLevel::LINFO;
 	}
 }
 
@@ -150,15 +152,6 @@ void LogManager::Shutdown() {
 
 	ringLog_.Clear();
 	initialized_ = false;
-
-	for (size_t i = 0; i < ARRAY_SIZE(log_); i++) {
-		log_[i].enabled = true;
-#if defined(_DEBUG)
-		log_[i].level = LogLevel::LDEBUG;
-#else
-		log_[i].level = LogLevel::LINFO;
-#endif
-	}
 }
 
 LogManager::LogManager() {
@@ -174,15 +167,16 @@ LogManager::LogManager() {
 	stdioUseColor_ = isatty(fileno(stdout));
 #endif
 
-#if PPSSPP_PLATFORM(WINDOWS) && !PPSSPP_PLATFORM(UWP)
+#if PPSSPP_PLATFORM(WINDOWS)
 	if (IsDebuggerPresent()) {
 		outputs_ |= LogOutput::DebugString;
 	}
-
+#if !PPSSPP_PLATFORM(UWP)
 	if (!consoleLog_) {
 		consoleLog_ = new ConsoleListener();
 	}
 	outputs_ |= LogOutput::WinConsole;
+#endif
 #endif
 }
 
@@ -195,7 +189,7 @@ LogManager::~LogManager() {
 #endif
 }
 
-void LogManager::ChangeFileLog(const Path &filename) {
+void LogManager::SetFileLogPath(const Path &filename) {
 	if (fp_ && filename == logFilename_) {
 		// All good
 		return;
@@ -205,47 +199,51 @@ void LogManager::ChangeFileLog(const Path &filename) {
 		fclose(fp_);
 	}
 
-	if (!filename.empty()) {
+	if (!filename.empty() && (outputs_ & LogOutput::File)) {
 		logFilename_ = Path(filename);
+		File::CreateFullPath(logFilename_.NavigateUp());
 		fp_ = File::OpenCFile(logFilename_, "at");
 		logFileOpenFailed_ = fp_ == nullptr;
 		if (logFileOpenFailed_) {
-			printf("Failed to open log file %s", filename.c_str());
+			printf("Failed to open log file %s\n", filename.c_str());
 		}
 	}
 }
 
 void LogManager::SaveConfig(Section *section) {
 	for (int i = 0; i < (int)Log::NUMBER_OF_LOGS; i++) {
-		section->Set((std::string(g_logTypeNames[i]) + "Enabled"), log_[i].enabled);
-		section->Set((std::string(g_logTypeNames[i]) + "Level"), (int)log_[i].level);
+		section->Set((std::string(g_logTypeNames[i]) + "Enabled"), g_log[i].enabled);
+		section->Set((std::string(g_logTypeNames[i]) + "Level"), (int)g_log[i].level);
 	}
 }
 
-void LogManager::LoadConfig(const Section *section, bool debugDefaults) {
+void LogManager::LoadConfig(const Section *section) {
 	for (int i = 0; i < (int)Log::NUMBER_OF_LOGS; i++) {
-		bool enabled = false;
-		int level = 0;
-		section->Get((std::string(g_logTypeNames[i]) + "Enabled"), &enabled, true);
-		section->Get((std::string(g_logTypeNames[i]) + "Level"), &level, (int)(debugDefaults ? LogLevel::LDEBUG : LogLevel::LERROR));
-		log_[i].enabled = enabled;
-		log_[i].level = (LogLevel)level;
+		// Defaults. Get now doesn't write the output if it fails.
+		bool enabled = true;
+		int level = (int)LogLevel::LERROR;
+		section->Get((std::string(g_logTypeNames[i]) + "Enabled"), &enabled);
+		section->Get((std::string(g_logTypeNames[i]) + "Level"), &level);
+		g_log[i].enabled = enabled;
+		g_log[i].level = (LogLevel)level;
 	}
 }
 
 void LogManager::SetOutputsEnabled(LogOutput outputs) {
-	outputs_ = outputs; 
+	outputs_ = outputs;
 	if (outputs & LogOutput::File) {
-		ChangeFileLog(logFilename_);
+		SetFileLogPath(logFilename_);
 	}
 }
 
 void LogManager::LogLine(LogLevel level, Log type, const char *file, int line, const char *format, va_list args) {
 	char msgBuf[1024];
 
-	const LogChannel &log = log_[(size_t)type];
-	if (level > log.level || !log.enabled || outputs_ == (LogOutput)0)
+	const LogChannel &log = g_log[(size_t)type];
+	if (level > log.level || !log.enabled || outputs_ == (LogOutput)0) {
+		// If we get here, it should have been caught earlier.
 		return;
+	}
 
 	LogMessage message;
 	message.level = level;
@@ -270,7 +268,7 @@ void LogManager::LogLine(LogLevel level, Log type, const char *file, int line, c
 	const char *hostThreadName = GetCurrentThreadName();
 	if ((hostThreadName && strcmp(hostThreadName, "EmuThread") != 0) || !hleCurrentThreadName) {
 		// Use the host thread name.
-		threadName = hostThreadName;
+		threadName = hostThreadName ? hostThreadName : "unknown";
 	} else {
 		// Use the PSP HLE thread name.
 		threadName = hleCurrentThreadName;
@@ -384,6 +382,10 @@ void OutputDebugStringUTF8(const char *p) {
 
 #endif
 
+#ifdef HAVE_LIBRETRO_VFS
+#undef fprintf
+#endif
+
 void LogManager::StdioLog(const LogMessage &message) {
 #if PPSSPP_PLATFORM(ANDROID)
 #ifndef LOG_APP_NAME
@@ -425,7 +427,6 @@ void LogManager::StdioLog(const LogMessage &message) {
 		__android_log_print(mode, LOG_APP_NAME, "%.*s", (int)msg.size(), msg.data());
 	}
 #else
-	std::lock_guard<std::mutex> lock(stdioLock_);
 	char text[2048];
 	snprintf(text, sizeof(text), "%s %s %s", message.timestamp, message.header, message.msg.c_str());
 	text[sizeof(text) - 2] = '\n';
@@ -456,6 +457,8 @@ void LogManager::StdioLog(const LogMessage &message) {
 			break;
 		}
 	}
+
+	std::lock_guard<std::mutex> lock(stdioLock_);
 	fprintf(stderr, "%s%s%s", colorAttr, text, resetAttr);
 #endif
 }

@@ -172,7 +172,7 @@ enum class CullMode : uint8_t {
 	NONE,
 	FRONT,
 	BACK,
-	FRONT_AND_BACK,  // Not supported on D3D9
+	FRONT_AND_BACK,
 };
 
 enum class Facing {
@@ -265,7 +265,6 @@ enum class Aspect {
 	STENCIL_BIT = 4,
 
 	// Implementation specific
-	SURFACE_BIT = 32,  // Used in conjunction with the others in D3D9 to get surfaces through get_api_texture
 	VIEW_BIT = 64,     // Used in conjunction with the others in D3D11 to get shader resource views through get_api_texture
 	FORMAT_BIT = 128,  // Actually retrieves the native format instead. D3D11 only.
 };
@@ -355,6 +354,7 @@ public:
 		UNIFORM_INDEXING_BROKEN = 13,  // not a properly diagnosed issue, a workaround attempt: #17386
 		PVR_BAD_16BIT_TEXFORMATS = 14,
 		NO_DEPTH_CANNOT_DISCARD_STENCIL_MALI = 15,
+		EMPTY_RENDERPASS_BROKEN_MALI = 16,
 		MAX_BUG,
 	};
 
@@ -477,6 +477,10 @@ public:
 	int Height() const { return height_; }
 	int Depth() const { return depth_; }
 	DataFormat Format() const { return format_; }
+	int DataSize() const {
+		// Rough estimate, discounts padding etc.
+		return width_ * height_ * (int)DataFormatSizeInBytes(format_);
+	}
 
 protected:
 	int width_ = -1, height_ = -1, depth_ = -1;
@@ -574,6 +578,7 @@ struct PipelineDesc {
 	const Slice<SamplerDef> samplers;
 };
 
+// Not normally used as a bitfield, but useful as a capability flag.
 enum class PresentMode {
 	FIFO = 1,
 	IMMEDIATE = 2,
@@ -581,9 +586,16 @@ enum class PresentMode {
 };
 ENUM_CLASS_BITOPS(PresentMode);
 
+inline bool PresentationModeBlocks(PresentMode mode) {
+	return mode & PresentMode::FIFO;
+}
+
 struct DeviceCaps {
 	GPUVendor vendor;
 	uint32_t deviceID;  // use caution!
+
+	uint32_t maxTextureSize;  // largest side.
+	uint32_t maxClipPlanes;
 
 	CoordConvention coordConvention;
 	DataFormat preferredDepthBufferFormat;
@@ -621,13 +633,10 @@ struct DeviceCaps {
 	bool provokingVertexLast;  // GL behavior, what the PSP does
 	bool verySlowShaderCompiler;
 
-	// From the other backends, we can detect if D3D9 support is known bad (like on Xe) and disable it.
-	bool supportsD3D9;
-
 	// Old style, for older GL or Direct3D 9.
 	u32 clipPlanesSupported;
 
-	// Presentation caps
+	// Presentation caps (simplified). Note: Vulkan supports more, we handle that separately now.
 	int presentMaxInterval; // 1 on many backends
 	bool presentInstantModeChange;
 	PresentMode presentModesSupported;
@@ -644,6 +653,7 @@ enum class TextureSwizzle {
 	DEFAULT,
 	R8_AS_ALPHA,
 	R8_AS_GRAYSCALE,
+	R8_AS_PREMUL_ALPHA,
 };
 
 struct TextureDesc {
@@ -798,11 +808,6 @@ public:
 	// Framebuffer fetch / input attachment support, needs to be explicit in Vulkan.
 	virtual void BindCurrentFramebufferForColorInput() {}
 
-	// deprecated, only used by D3D9
-	virtual uintptr_t GetFramebufferAPITexture(Framebuffer *fbo, Aspect aspect, int attachment) {
-		return 0;
-	}
-
 	virtual void GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h) = 0;
 
 	// Could be useful in OpenGL ES to give hints about framebuffers on tiler GPUs
@@ -828,7 +833,6 @@ public:
 	// * Vulkan: VkImageView
 	// * D3D11: ID3D11ShaderResourceView*
 	// * OpenGL: GLRTexture
-	// * D3D9: LPDIRECT3DTEXTURE9
 	virtual void BindNativeTexture(int sampler, void *nativeTexture) = 0;
 
 	// Only supports a single dynamic uniform buffer, for maximum compatibility with the old APIs and ease of emulation.
@@ -858,9 +862,9 @@ public:
 	virtual void BeginFrame(DebugFlags debugFlags) = 0;
 	virtual void EndFrame() = 0;
 
-	// vblanks is only relevant in FIFO present mode.
-	// NOTE: Not all backends support vblanks > 1. Some backends also can't change presentation mode immediately.
-	virtual void Present(PresentMode presentMode, int vblanks) = 0;
+	// Some backends also can't change presentation mode immediately.
+	virtual void Present(PresentMode presentMode) = 0;
+	virtual PresentMode GetCurrentPresentMode() const = 0;
 
 	// This should be avoided as much as possible, in favor of clearing when binding a render target, which is native
 	// on Vulkan.

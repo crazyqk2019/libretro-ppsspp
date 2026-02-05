@@ -37,14 +37,14 @@ public:
 	u32 CheckGPUFeatures() const override;
 
 	void GetStats(char *buffer, size_t bufsize) override;
-	void DeviceLost() override;  // Only happens on Android. Drop all textures and shaders.
+	void DeviceLost() override;  // Destroy all device objects.
 	void DeviceRestore(Draw::DrawContext *draw) override;
 
 protected:
 	void FinishDeferred() override;
 
 private:
-	void BeginHostFrame() override;
+	void BeginHostFrame(const DisplayLayoutConfig &config) override;
 
 	ID3D11Device *device_;
 	ID3D11DeviceContext *context_;

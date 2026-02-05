@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <tchar.h>
 #include "Common/Data/Encoding/Utf8.h"
 #include "Common/StringUtils.h"
 #include "Common/System/Display.h"
@@ -13,14 +12,14 @@
 #include "GPU/Debugger/Breakpoints.h"
 #include "GPU/GPUState.h"
 
-LPCTSTR CtrlDisplayListView::windowClass = _T("CtrlDisplayListView");
+constexpr wchar_t *szWindowClass = L"CtrlDisplayListView";
 
 void CtrlDisplayListView::registerClass()
 {
 	WNDCLASSEX wndClass;
 
 	wndClass.cbSize         = sizeof(wndClass);
-	wndClass.lpszClassName  = windowClass;
+	wndClass.lpszClassName  = szWindowClass;
 	wndClass.hInstance      = GetModuleHandle(0);
 	wndClass.lpfnWndProc    = wndProc;
 	wndClass.hCursor        = LoadCursor (NULL, IDC_ARROW);
@@ -45,7 +44,7 @@ CtrlDisplayListView::CtrlDisplayListView(HWND _wnd)
 	instructionSize = 4;
 
 	// In small window mode, g_dpi_scale may have been adjusted.
-	const float fontScale = 1.0f / g_display.dpi_scale_real;
+	const float fontScale = 1.0f / g_display.dpi_scale_real_y;
 	int fontHeight = g_Config.iFontHeight * fontScale;
 	int charWidth = g_Config.iFontWidth * fontScale;
 

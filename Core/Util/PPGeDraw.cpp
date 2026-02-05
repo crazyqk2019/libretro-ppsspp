@@ -251,6 +251,8 @@ void __PPGeInit() {
 	int height[12]{};
 	int flags = 0;
 
+	// TODO: Load the atlas on a thread!
+
 	bool loadedZIM = !skipZIM && LoadZIM("ppge_atlas.zim", width, height, &flags, imageData);
 	if (!skipZIM && !loadedZIM) {
 		ERROR_LOG(Log::sceGe, "Failed to load ppge_atlas.zim.\n\nPlace it in the directory \"assets\" under your PPSSPP directory.\n\nPPGe stuff will not be drawn.");
@@ -261,7 +263,7 @@ void __PPGeInit() {
 		if (!g_ppge_atlas.IsMetadataLoaded()) {
 			uint8_t *atlas_data = g_VFS.ReadFile("ppge_atlas.meta", &atlas_data_size);
 			if (atlas_data)
-				g_ppge_atlas.Load(atlas_data, atlas_data_size);
+				g_ppge_atlas.LoadMeta(atlas_data, atlas_data_size);
 			delete[] atlas_data;
 		}
 	}
@@ -767,7 +769,7 @@ static bool HasTextDrawer() {
 	if (textDrawer) {
 		textDrawer->SetFontScale(1.0f, 1.0f);
 		textDrawer->SetForcedDPIScale(1.0f);
-		textDrawer->SetFont(g_Config.sFont.c_str(), 18, 0);
+		textDrawer->SetOrCreateFont(FontStyle(FontFamily::SansSerif, 18, FontStyleFlags::Default));
 	}
 	textDrawerInited = true;
 	return textDrawer != nullptr;
@@ -786,8 +788,7 @@ void PPGeMeasureText(float *w, float *h, std::string_view text, float scale, int
 		int dtalign = (WrapType & PPGE_LINE_WRAP_WORD) ? FLAG_WRAP_TEXT : 0;
 		if (WrapType & PPGE_LINE_USE_ELLIPSIS)
 			dtalign |= FLAG_ELLIPSIZE_TEXT;
-		Bounds b(0, 0, wrapWidth <= 0 ? 480.0f : wrapWidth, 272.0f);
-		textDrawer->MeasureStringRect(s, b, &mw, &mh, dtalign);
+		textDrawer->MeasureStringRect(s, wrapWidth <= 0 ? 480.0f : wrapWidth, &mw, &mh, dtalign);
 
 		if (w)
 			*w = mw;
@@ -1119,7 +1120,7 @@ void PPGeDrawTextWrapped(std::string_view text, float x, float y, float wrapWidt
 		Bounds b(0, 0, wrapWidth <= 0 ? 480.0f - x : wrapWidth, wrapHeight);
 		int tdalign = 0;
 		textDrawer->SetFontScale(style.scale, style.scale);
-		textDrawer->MeasureStringRect(s, b, &actualWidth, &actualHeight, tdalign | FLAG_WRAP_TEXT);
+		textDrawer->MeasureStringRect(s, b.w, &actualWidth, &actualHeight, tdalign | FLAG_WRAP_TEXT);
 
 		// Check if we need to scale the text down to fit better.
 		PPGeStyle adjustedStyle = style;
@@ -1127,7 +1128,7 @@ void PPGeDrawTextWrapped(std::string_view text, float x, float y, float wrapWidt
 			// Cheap way to get the line height.
 			float oneLine, twoLines;
 			textDrawer->MeasureString("|", &actualWidth, &oneLine);
-			textDrawer->MeasureStringRect("|\n|", Bounds(0, 0, 480, 272), &actualWidth, &twoLines);
+			textDrawer->MeasureStringRect("|\n|", 480, &actualWidth, &twoLines);
 
 			float lineHeight = twoLines - oneLine;
 			if (actualHeight > wrapHeight * maxScaleDown) {
@@ -1327,7 +1328,7 @@ void PPGeSetTexture(u32 dataAddr, int width, int height)
 	WriteCmd(GE_CMD_TEXSIZE0, wp2 | (hp2 << 8));
 	WriteCmd(GE_CMD_TEXMAPMODE, 0 | (1 << 8));
 	WriteCmd(GE_CMD_TEXMODE, 0);
-	WriteCmd(GE_CMD_TEXFORMAT, GE_TFMT_8888);  // 4444
+	WriteCmd(GE_CMD_TEXFORMAT, GE_TFMT_8888);
 	WriteCmd(GE_CMD_TEXFILTER, (1 << 8) | 1);   // mag = LINEAR min = LINEAR
 	WriteCmd(GE_CMD_TEXWRAP, (1 << 8) | 1);  // clamp texture wrapping
 	WriteCmd(GE_CMD_TEXFUNC, (0 << 16) | (1 << 8) | 0);  // RGBA texture reads, modulate, no color doubling
@@ -1343,12 +1344,17 @@ void PPGeDisableTexture()
 
 std::vector<PPGeImage *> PPGeImage::loadedTextures_;
 
+constexpr size_t MAX_VALID_IMAGE_SIZE = 16 * 1024 * 1024;
+
 PPGeImage::PPGeImage(std::string_view pspFilename)
 	: filename_(pspFilename) {
 }
 
 PPGeImage::PPGeImage(u32 pngPointer, size_t pngSize)
 	: filename_(""), png_(pngPointer), size_(pngSize) {
+	if (!Memory::IsValidRange(this->png_, (u32)this->size_)) {
+		WARN_LOG(Log::sceGe, "Created PPGeImage from invalid memory range %08x (%08x bytes). Will not be drawn.", this->png_, (int)this->size_);
+	}
 }
 
 PPGeImage::~PPGeImage() {
@@ -1363,10 +1369,16 @@ bool PPGeImage::Load() {
 	width_ = 0;
 	height_ = 0;
 
-	unsigned char *textureData;
+	unsigned char *textureData = nullptr;
 	int success;
 	if (filename_.empty()) {
-		success = pngLoadPtr(Memory::GetPointerRange(png_, (u32)size_), size_, &width_, &height_, &textureData);
+		_dbg_assert_(size_ < MAX_VALID_IMAGE_SIZE);
+		const u8 *srcPtr = Memory::GetPointerRange(png_, (u32)size_);
+		if (!srcPtr) {
+			ERROR_LOG(Log::sceGe, "Trying to load PPGeImage from invalid range: %08x, %08x bytes", png_, (int)size_);
+			return false;
+		}
+		success = pngLoadPtr(srcPtr, size_, &width_, &height_, &textureData);
 	} else {
 		std::vector<u8> pngData;
 		if (pspFileSystem.ReadEntireFile(filename_, pngData) < 0) {
@@ -1406,6 +1418,11 @@ bool PPGeImage::IsValid() {
 	if (loadFailed_)
 		return false;
 
+	if (size_ && !Memory::IsValidRange(this->png_, (u32)this->size_)) {
+		return false;
+	}
+
+	// TODO: It's really wacky to call Decimate from in here.
 	if (texture_ == 0) {
 		Decimate();
 		return Load();

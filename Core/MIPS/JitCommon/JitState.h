@@ -68,7 +68,6 @@ namespace MIPSComp {
 		int numInstructions;
 		bool compiling;	// TODO: get rid of this in favor of using analysis results to determine end of block
 		bool hadBreakpoints;
-		bool preloading = false;
 		JitBlock *curBlock;
 
 		u8 hasSetRounding = 0;
@@ -230,10 +229,7 @@ namespace MIPSComp {
 		bool useForwardJump;
 		bool cachePointers;
 		// ARM only
-		bool useNEONVFPU;
 		bool downcountInRegister;
-		// ARM64 only
-		bool useASIMDVFPU;
 		// ARM64 and RV64
 		bool useStaticAlloc;
 		bool enablePointerify;
@@ -243,7 +239,6 @@ namespace MIPSComp {
 		// Common
 		bool enableBlocklink;
 		bool immBranches;
-		bool continueBranches;
 		bool continueJumps;
 		int continueMaxInstructions;
 	};

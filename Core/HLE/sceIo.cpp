@@ -45,6 +45,7 @@
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceUmd.h"
+#include "Core/HLE/sceChnnlsv.h"
 #include "Core/HW/Display.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/HW/MemoryStick.h"
@@ -63,7 +64,6 @@ extern "C" {
 
 #include "Core/HLE/sceIo.h"
 #include "Core/HLE/sceRtc.h"
-#include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceKernelMemory.h"
 #include "Core/HLE/sceKernelThread.h"
 #include "Core/HLE/sceKernelInterrupt.h"
@@ -141,7 +141,7 @@ static MemStickFatState lastMemStickFatState;
 
 static AsyncIOManager ioManager;
 static bool ioManagerThreadEnabled = false;
-static std::thread *ioManagerThread;
+static std::thread ioManagerThread;
 
 // TODO: Is it better to just put all on the thread?
 // Let's try. (was 256)
@@ -582,10 +582,12 @@ static void __IoAsyncEndCallback(SceUID threadID, SceUID prevCallbackId) {
 
 static void __IoManagerThread() {
 	SetCurrentThreadName("IO");
+	INFO_LOG(Log::sceIo, "Entering __IoManagerThread");
 	AndroidJNIThreadContext jniContext;
-	while (ioManagerThreadEnabled && coreState != CORE_BOOT_ERROR && coreState != CORE_RUNTIME_ERROR && coreState != CORE_POWERDOWN) {
+	while (ioManagerThreadEnabled) {
 		ioManager.RunEventsUntil(CoreTiming::GetTicks() + msToCycles(1000));
 	}
+	INFO_LOG(Log::sceIo, "Leaving __IoManagerThread");
 }
 
 static void __IoWakeManager(CoreLifecycle stage) {
@@ -690,7 +692,7 @@ void __IoInit() {
 	ioManagerThreadEnabled = true;
 	ioManager.SetThreadEnabled(true);
 	Core_ListenLifecycle(&__IoWakeManager);
-	ioManagerThread = new std::thread(&__IoManagerThread);
+	ioManagerThread = std::thread(&__IoManagerThread);
 
 	__KernelRegisterWaitTypeFuncs(WAITTYPE_ASYNCIO, __IoAsyncBeginCallback, __IoAsyncEndCallback);
 
@@ -772,10 +774,8 @@ void __IoShutdown() {
 	ioManagerThreadEnabled = false;
 	ioManager.SyncThread();
 	ioManager.FinishEventLoop();
-	if (ioManagerThread != nullptr) {
-		ioManagerThread->join();
-		delete ioManagerThread;
-		ioManagerThread = nullptr;
+	if (ioManagerThread.joinable()) {
+		ioManagerThread.join();
 		ioManager.Shutdown();
 	}
 
@@ -836,8 +836,7 @@ static void IoStartAsyncThread(int id, FileNode *f) {
 	f->pendingAsyncResult = true;
 }
 
-static u32 sceIoAssign(u32 alias_addr, u32 physical_addr, u32 filesystem_addr, int mode, u32 arg_addr, int argSize)
-{
+static u32 sceIoAssign(u32 alias_addr, u32 physical_addr, u32 filesystem_addr, int mode, u32 arg_addr, int argSize) {
 	if (!Memory::IsValidNullTerminatedString(alias_addr) ||
 		!Memory::IsValidNullTerminatedString(physical_addr) ||
 		!Memory::IsValidNullTerminatedString(filesystem_addr)) {
@@ -968,7 +967,7 @@ static u32 sceIoGetstat(const char *filename, u32 addr) {
 			return hleDelayResult(hleLogError(Log::sceIo, -1, "bad address"), "io getstat", usec);
 		}
 	} else {
-		return hleDelayResult(hleLogError(Log::sceIo, SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND, "FILE NOT FOUND"), "io getstat", usec);
+		return hleDelayResult(hleLogWarning(Log::sceIo, SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND, "FILE NOT FOUND"), "io getstat", usec);
 	}
 }
 
@@ -999,6 +998,11 @@ static u32 sceIoChstat(const char *filename, u32 iostatptr, u32 changebits) {
 
 static u32 npdrmRead(FileNode *f, u8 *data, int size) {
 	PGD_DESC *pgd = f->pgdInfo;
+	if (!pgd) {
+		// When pgdInfo is null, fall back to reading the file in non-encrypted mode
+		WARN_LOG(Log::IO, "npdrmRead: pgdInfo is null for file %s, reading as non-encrypted", f->fullpath.c_str());
+		return (u32)pspFileSystem.ReadFile(f->handle, data, size);
+	}
 	u32 block, offset, blockPos;
 	u32 remain_size, copy_size;
 
@@ -1009,13 +1013,15 @@ static u32 npdrmRead(FileNode *f, u8 *data, int size) {
 		size = (int)pgd->data_size;
 	remain_size = size;
 
+	KirkState *kirk = __ChnnlsvKirkState();
+
 	while(remain_size){
 	
 		if(pgd->current_block!=block){
 			blockPos = block*pgd->block_size;
 			pspFileSystem.SeekFile(f->handle, (s32)pgd->data_offset+blockPos, FILEMOVE_BEGIN);
 			pspFileSystem.ReadFile(f->handle, pgd->block_buf, pgd->block_size);
-			pgd_decrypt_block(pgd, block);
+			pgd_decrypt_block(kirk, pgd, block);
 			pgd->current_block = block;
 		}
 
@@ -1075,7 +1081,7 @@ static bool __IoRead(int &result, int id, u32 data_addr, int size, int &us) {
 			const std::string tag = "IoRead/" + IODetermineFilename(f);
 			NotifyMemInfo(MemBlockFlags::WRITE, data_addr, size, tag.c_str(), tag.size());
 			u8 *data = (u8 *)Memory::GetPointerUnchecked(data_addr);
-			u32 validSize = Memory::ValidSize(data_addr, size);
+			u32 validSize = Memory::ClampValidSizeAt(data_addr, size);
 			if (f->npdrm) {
 				result = npdrmRead(f, data, validSize);
 				currentMIPS->InvalidateICache(data_addr, validSize);
@@ -1148,7 +1154,7 @@ static u32 sceIoRead(int id, u32 data_addr, int size) {
 		f->waitingSyncThreads.push_back(__KernelGetCurThread());
 		return hleLogDebug(Log::sceIo, 0, "deferring result");
 	} else if (result >= 0) {
-		return hleDelayResult(hleLogDebug(Log::ME, result), "io read", us);
+		return hleDelayResult(hleLogDebug(Log::sceIo, result), "io read", us);
 	} else {
 		return hleLogWarning(Log::ME, result, "error %08x", result);
 	}
@@ -1191,7 +1197,7 @@ static bool __IoWrite(int &result, int id, u32 data_addr, int size, int &us) {
 	}
 
 	const void *data_ptr = Memory::GetPointer(data_addr);
-	const u32 validSize = Memory::ValidSize(data_addr, size);
+	const u32 validSize = Memory::ClampValidSizeAt(data_addr, size);
 	// Let's handle stdout/stderr specially.
 	if (id == PSP_STDOUT || id == PSP_STDERR) {
 		const char *str = (const char *) data_ptr;
@@ -1279,6 +1285,9 @@ static u32 sceIoWrite(int id, u32 data_addr, int size) {
 	int us;
 	bool complete = __IoWrite(result, id, data_addr, size, us);
 	if (!complete) {
+		if (!f) {
+			return hleLogError(Log::sceIo, error, "bad file descriptor");
+		}
 		__IoSchedSync(f, id, us);
 		__KernelWaitCurThread(WAITTYPE_IO, id, 0, 0, false, "io write");
 		f->waitingSyncThreads.push_back(__KernelGetCurThread());
@@ -1358,6 +1367,10 @@ static u32 npdrmLseek(FileNode *f, s32 where, FileMove whence)
 {
 	u32 newPos, blockPos;
 
+	if (!f->pgdInfo) {
+		//WARN_LOG(Log::IO, "npdrmLseek: pgdInfo is null for file %s, seeking as non-encrypted", f->fullpath.c_str());
+		return (u32)pspFileSystem.SeekFile(f->handle, where, whence);
+	}
 	if(whence==FILEMOVE_BEGIN){
 		newPos = where;
 	}else if(whence==FILEMOVE_CURRENT){
@@ -1532,7 +1545,7 @@ static FileNode *__IoOpen(int &error, const char *filename, int flags, int mode)
 
 		isTTY = true;
 	} else {
-		h = pspFileSystem.OpenFile(filename, (FileAccess)access);
+		h = pspFileSystem.OpenFile(filename, (FileAccess)(access | (int)FileAccess::FILEACCESS_PPSSPP_QUIET));
 		if (h < 0) {
 			error = h;
 			return nullptr;
@@ -2059,23 +2072,25 @@ static u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 o
 				PSP_CoreParameter().fastForward = false;
 			return hleLogDebug(Log::sceIo, 0);
 		case EMULATOR_DEVCTL__GET_ASPECT_RATIO:
+			// NOTE: This currently only works correctly in landscape mode!
 			if (Memory::IsValidAddress(outPtr)) {
 				// TODO: Share code with CalculateDisplayOutputRect to take a few more things into account.
 				// I have a planned further refactoring.
 				float ar;
-				if (g_Config.bDisplayStretch) {
+				if (g_Config.displayLayoutLandscape.bDisplayStretch) {
 					ar = (float)g_display.dp_xres / (float)g_display.dp_yres;
 				} else {
-					ar = g_Config.fDisplayAspectRatio * (480.0f / 272.0f);
+					ar = g_Config.displayLayoutLandscape.fDisplayAspectRatio * (480.0f / 272.0f);
 				}
 				Memory::Write_Float(ar, outPtr);
 			}
 			return hleLogDebug(Log::sceIo, 0);
 		case EMULATOR_DEVCTL__GET_SCALE:
+			// NOTE: This currently only works correctly in landscape mode!
 			if (Memory::IsValidAddress(outPtr)) {
 				// TODO: Maybe do something more sophisticated taking the longest side and screen rotation
 				// into account, etc.
-				float scale = (float)g_display.dp_xres * g_Config.fDisplayScale / 480.0f;
+				float scale = (float)g_display.dp_xres * g_Config.displayLayoutLandscape.fDisplayScale / 480.0f;
 				Memory::Write_Float(scale, outPtr);
 			}
 			return hleLogDebug(Log::sceIo, 0);
@@ -2407,7 +2422,7 @@ static u32 sceIoDopen(const char *path) {
 	auto listing = pspFileSystem.GetDirListing(path, &listingExists);
 
 	if (!listingExists) {
-		return hleLogError(Log::sceIo, SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND);
+		return hleLogWarning(Log::sceIo, SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND);
 	}
 
 	DirListing *dir = new DirListing();
@@ -2577,12 +2592,14 @@ int __IoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 out
 			key_ptr = nullptr;
 		}
 
-		DEBUG_LOG(Log::sceIo, "Decrypting PGD DRM files");
+		INFO_LOG(Log::sceIo, "ioctl: Decrypting PGD DRM files from '%s'", f->fullpath.c_str());
 		pspFileSystem.SeekFile(f->handle, (s32)f->pgd_offset, FILEMOVE_BEGIN);
 		pspFileSystem.ReadFile(f->handle, pgd_header, 0x90);
-		f->pgdInfo = pgd_open(pgd_header, 2, key_ptr);
+		KirkState *kirk = __ChnnlsvKirkState();
+		f->pgdInfo = pgd_open(kirk, pgd_header, 2, key_ptr);
 		if (!f->pgdInfo) {
 			f->npdrm = false;
+			f->pgd_offset = 0;  // Reset PGD offset so file can be read as regular file
 			pspFileSystem.SeekFile(f->handle, (s32)0, FILEMOVE_BEGIN);
 			if (memcmp(pgd_header, pgd_magic, 4) == 0) {
 				// File is PGD file, but key mismatch
@@ -3013,7 +3030,7 @@ const HLEFunction IoFileMgrForUser[] = {
 };
 
 void Register_IoFileMgrForUser() {
-	RegisterModule("IoFileMgrForUser", ARRAY_SIZE(IoFileMgrForUser), IoFileMgrForUser);
+	RegisterHLEModule("IoFileMgrForUser", ARRAY_SIZE(IoFileMgrForUser), IoFileMgrForUser);
 }
 
 const HLEFunction IoFileMgrForKernel[] = {
@@ -3053,7 +3070,7 @@ const HLEFunction IoFileMgrForKernel[] = {
 };
 
 void Register_IoFileMgrForKernel() {
-	RegisterModule("IoFileMgrForKernel", ARRAY_SIZE(IoFileMgrForKernel), IoFileMgrForKernel);
+	RegisterHLEModule("IoFileMgrForKernel", ARRAY_SIZE(IoFileMgrForKernel), IoFileMgrForKernel);
 }
 
 const HLEFunction StdioForUser[] = {
@@ -3071,7 +3088,7 @@ const HLEFunction StdioForUser[] = {
 };
 
 void Register_StdioForUser() {
-	RegisterModule("StdioForUser", ARRAY_SIZE(StdioForUser), StdioForUser);
+	RegisterHLEModule("StdioForUser", ARRAY_SIZE(StdioForUser), StdioForUser);
 }
 
 const HLEFunction StdioForKernel[] = {
@@ -3086,5 +3103,5 @@ const HLEFunction StdioForKernel[] = {
 };
 
 void Register_StdioForKernel() {
-	RegisterModule("StdioForKernel", ARRAY_SIZE(StdioForKernel), StdioForKernel);
+	RegisterHLEModule("StdioForKernel", ARRAY_SIZE(StdioForKernel), StdioForKernel);
 }

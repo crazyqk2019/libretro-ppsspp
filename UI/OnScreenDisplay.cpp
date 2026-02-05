@@ -14,6 +14,7 @@
 #include "UI/DebugOverlay.h"
 
 #include "Common/UI/Context.h"
+#include "Common/UI/Notice.h"
 #include "Common/System/OSD.h"
 
 #include "Common/TimeUtil.h"
@@ -26,159 +27,20 @@ static inline const char *DeNull(const char *ptr) {
 extern bool g_TakeScreenshot;
 
 static const float g_atlasIconSize = 36.0f;
-static const float extraTextScale = 0.7f;
-
-static uint32_t GetNoticeBackgroundColor(NoticeLevel type) {
-	// Colors from Infima
-	switch (type) {
-	case NoticeLevel::ERROR: return 0x3530d5;  // danger-darker
-	case NoticeLevel::WARN: return 0x009ed9;  // warning-darker
-	case NoticeLevel::INFO: return 0x706760;  // gray-700
-	case NoticeLevel::SUCCESS: return 0x008b00;  // nice green
-	default: return 0x606770;
-	}
-}
-
-static ImageID GetOSDIcon(NoticeLevel level) {
-	switch (level) {
-	case NoticeLevel::INFO: return ImageID("I_INFO");
-	case NoticeLevel::ERROR: return ImageID("I_CROSS");
-	case NoticeLevel::WARN: return ImageID("I_WARNING");
-	case NoticeLevel::SUCCESS: return ImageID("I_CHECKMARK");
-	default: return ImageID::invalid();
-	}
-}
-
-static NoticeLevel GetNoticeLevel(OSDType type) {
-	switch (type) {
-	case OSDType::MESSAGE_INFO:
-		return NoticeLevel::INFO;
-	case OSDType::MESSAGE_ERROR:
-	case OSDType::MESSAGE_ERROR_DUMP:
-	case OSDType::MESSAGE_CENTERED_ERROR:
-		return NoticeLevel::ERROR;
-	case OSDType::MESSAGE_WARNING:
-	case OSDType::MESSAGE_CENTERED_WARNING:
-		return NoticeLevel::WARN;
-	case OSDType::MESSAGE_SUCCESS:
-		return NoticeLevel::SUCCESS;
-	default:
-		return NoticeLevel::SUCCESS;
-	}
-}
 
 // Align only matters here for the ASCII-only flag.
-static void MeasureNotice(const UIContext &dc, NoticeLevel level, const std::string &text, const std::string &details, const std::string &iconName, int align, float *width, float *height, float *height1) {
-	dc.MeasureText(dc.theme->uiFont, 1.0f, 1.0f, text, width, height, align);
-
-	*height1 = *height;
-
-	float width2 = 0.0f, height2 = 0.0f;
-	if (!details.empty()) {
-		dc.MeasureText(dc.theme->uiFont, extraTextScale, extraTextScale, details, &width2, &height2, align);
-		*width = std::max(*width, width2);
-	}
-
-	float iconW = 0.0f;
-	float iconH = 0.0f;
-	if (!iconName.empty() && !startsWith(iconName, "I_")) {  // Check for atlas image. Bit hacky, but we choose prefixes for icon IDs anyway in a way that this is safe.
-		// Normal entry but with a cached icon.
-		int iconWidth, iconHeight;
-		if (g_iconCache.GetDimensions(iconName, &iconWidth, &iconHeight)) {
-			*width += 5.0f + iconWidth;
-			iconW = iconWidth;
-			iconH = iconHeight;
-		}
-	} else {
-		ImageID iconID = iconName.empty() ? GetOSDIcon(level) : ImageID(iconName.c_str());
-		if (iconID.isValid()) {
-			dc.Draw()->GetAtlas()->measureImage(iconID, &iconW, &iconH);
-		}
-	}
-
-	iconW += 5.0f;
-
-	*width += iconW + 12.0f;
-	if (height2 == 0.0f && iconH < 2.0f * *height1) {
-		// Center vertically using the icon.
-		*height1 = std::max(*height1, iconH + 2.0f);
-	}
-	*height = std::max(*height1 + height2 + 8.0f, iconH + 5.0f);
-}
-
-// Align only matters here for the ASCII-only flag.
-static void MeasureOSDEntry(const UIContext &dc, const OnScreenDisplay::Entry &entry, int align, float *width, float *height, float *height1) {
+static void MeasureOSDEntry(const UIContext &dc, const OnScreenDisplay::Entry &entry, int align, float maxWidth, float *width, float *height, float *height1) {
 	if (entry.type == OSDType::ACHIEVEMENT_UNLOCKED) {
 		const rc_client_achievement_t *achievement = rc_client_get_achievement_info(Achievements::GetClient(), entry.numericID);
 		MeasureAchievement(dc, achievement, AchievementRenderStyle::UNLOCKED, width, height);
-		*width = 550.0f;
+		*width = std::min(maxWidth, 550.0f);
 		*height1 = *height;
 	} else {
-		MeasureNotice(dc, GetNoticeLevel(entry.type), entry.text, entry.text2, entry.iconName, align, width, height, height1);
+		MeasureNotice(dc, GetNoticeLevel(entry.type), entry.text, entry.text2, entry.iconName, align, maxWidth, width, height, height1);
 	}
 }
 
-static void RenderNotice(UIContext &dc, Bounds bounds, float height1, NoticeLevel level, const std::string &text, const std::string &details, const std::string &iconName, int align, float alpha, bool transparent) {
-	UI::Drawable background = UI::Drawable(colorAlpha(GetNoticeBackgroundColor(level), alpha));
-
-	uint32_t foreGround = whiteAlpha(alpha);
-
-	if (!transparent) {
-		dc.DrawRectDropShadow(bounds, 12.0f, 0.7f * alpha);
-		dc.FillRect(background, bounds);
-	}
-
-	float iconW = 0.0f;
-	float iconH = 0.0f;
-	if (!iconName.empty() && !startsWith(iconName, "I_")) {
-		dc.Flush();
-		// Normal entry but with a cached icon.
-		Draw::Texture *texture = g_iconCache.BindIconTexture(&dc, iconName);
-		if (texture) {
-			iconW = texture->Width();
-			iconH = texture->Height();
-			dc.Draw()->DrawTexRect(Bounds(bounds.x + 2.5f, bounds.y + 2.5f, iconW, iconH), 0.0f, 0.0f, 1.0f, 1.0f, foreGround);
-			dc.Flush();
-			dc.RebindTexture();
-		}
-		dc.Begin();
-	} else {
-		ImageID iconID = iconName.empty() ? GetOSDIcon(level) : ImageID(iconName.c_str());
-		if (iconID.isValid()) {
-			// Atlas icon.
-			dc.Draw()->GetAtlas()->measureImage(iconID, &iconW, &iconH);
-			if (!iconName.empty()) {
-				Bounds iconBounds = Bounds(bounds.x + 2.5f, bounds.y + 2.5f, iconW, iconH);
-				// If it's not a preset OSD icon, give it some background to blend in. The RA icon for example
-				// easily melts into the orange of warnings otherwise.
-				dc.FillRect(UI::Drawable(0x50000000), iconBounds.Expand(2.0f));
-			}
-			dc.DrawImageVGradient(iconID, foreGround, foreGround, Bounds(bounds.x + 2.5f, bounds.y + 2.5f, iconW, iconH));
-		}
-	}
-
-	// Make room
-	bounds.x += iconW + 5.0f;
-	bounds.w -= iconW + 5.0f;
-
-	Bounds primaryBounds = bounds;
-	primaryBounds.h = height1;
-
-	dc.DrawTextShadowRect(text, primaryBounds.Inset(2.0f, 0.0f, 1.0f, 0.0f), foreGround, (align & FLAG_DYNAMIC_ASCII) | ALIGN_VCENTER);
-
-	if (!details.empty()) {
-		Bounds bottomTextBounds = bounds.Inset(3.0f, height1 + 5.0f, 3.0f, 3.0f);
-		if (!transparent) {
-			UI::Drawable backgroundDark = UI::Drawable(colorAlpha(darkenColor(GetNoticeBackgroundColor(level)), alpha));
-			dc.FillRect(backgroundDark, bottomTextBounds);
-		}
-		dc.SetFontScale(extraTextScale, extraTextScale);
-		dc.DrawTextRect(details, bottomTextBounds.Inset(1.0f, 1.0f), foreGround, (align & FLAG_DYNAMIC_ASCII) | ALIGN_LEFT);
-	}
-	dc.SetFontScale(1.0f, 1.0f);
-}
-
-static void RenderOSDEntry(UIContext &dc, const OnScreenDisplay::Entry &entry, Bounds bounds, float height1, int align, float alpha) {
+static void RenderOSDEntry(UIContext &dc, const OnScreenDisplay::Entry &entry, Bounds bounds, float height1, int align, float alpha, float now) {
 	if (entry.type == OSDType::ACHIEVEMENT_UNLOCKED) {
 		const rc_client_achievement_t * achievement = rc_client_get_achievement_info(Achievements::GetClient(), entry.numericID);
 		if (achievement) {
@@ -186,14 +48,8 @@ static void RenderOSDEntry(UIContext &dc, const OnScreenDisplay::Entry &entry, B
 		}
 		return;
 	} else {
-		bool transparent = entry.type == OSDType::TRANSPARENT_STATUS;
-		RenderNotice(dc, bounds, height1, GetNoticeLevel(entry.type), entry.text, entry.text2, entry.iconName, align, alpha, transparent);
+		RenderNotice(dc, bounds, height1, GetNoticeLevel(entry.type), entry.text, entry.text2, entry.iconName, align, alpha, entry.flags, now - entry.startTime);
 	}
-}
-
-static void MeasureOSDProgressBar(const UIContext &dc, const OnScreenDisplay::Entry &bar, float *width, float *height) {
-	*height = 36;
-	*width = 450.0f;
 }
 
 static void RenderOSDProgressBar(UIContext &dc, const OnScreenDisplay::Entry &entry, Bounds bounds, int align, float alpha) {
@@ -227,7 +83,7 @@ static void RenderOSDProgressBar(UIContext &dc, const OnScreenDisplay::Entry &en
 		dc.FillRect(background, bounds);
 	}
 
-	dc.SetFontStyle(dc.theme->uiFont);
+	dc.SetFontStyle(dc.GetTheme().uiFont);
 	dc.SetFontScale(1.0f, 1.0f);
 
 	dc.DrawTextShadowRect(entry.text, bounds, colorAlpha(0xFFFFFFFF, alpha), (align & FLAG_DYNAMIC_ASCII) | ALIGN_CENTER);
@@ -245,13 +101,13 @@ static void RenderLeaderboardTracker(UIContext &dc, const Bounds &bounds, const 
 	UI::Drawable background = UI::Drawable(backgroundColor);
 	dc.DrawRectDropShadow(bounds, 12.0f, 0.7f * alpha);
 	dc.FillRect(background, bounds);
-	dc.SetFontStyle(dc.theme->uiFont);
+	dc.SetFontStyle(dc.GetTheme().uiFont);
 	dc.SetFontScale(1.0f, 1.0f);
 	dc.DrawTextShadowRect(text, bounds.Inset(5.0f, 5.0f), colorAlpha(0xFFFFFFFF, alpha), ALIGN_VCENTER | ALIGN_HCENTER);
 }
 
 void OnScreenMessagesView::Draw(UIContext &dc) {
-	if (!g_Config.bShowOnScreenMessages || g_TakeScreenshot) {
+	if (g_TakeScreenshot) {
 		return;
 	}
 
@@ -264,12 +120,11 @@ void OnScreenMessagesView::Draw(UIContext &dc) {
 	const float fadeinCoef = 1.0f / OnScreenDisplay::FadeinTime();
 	const float fadeoutCoef = 1.0f / OnScreenDisplay::FadeoutTime();
 
-	float sidebarAlpha = g_OSD.SidebarAlpha();
+	float ingameAlpha = g_OSD.IngameAlpha();
 
 	struct LayoutEdge {
 		float height;
 		float maxWidth;
-		float alpha;
 	};
 
 	struct MeasuredEntry {
@@ -288,17 +143,18 @@ void OnScreenMessagesView::Draw(UIContext &dc) {
 	std::vector<MeasuredEntry> measuredEntries;
 	measuredEntries.resize(entries.size());
 
-	// Indexed by the enum ScreenEdgePosition.
-	LayoutEdge edges[(size_t)ScreenEdgePosition::VALUE_COUNT]{};
-	for (size_t i = 0; i < (size_t)ScreenEdgePosition::VALUE_COUNT; i++) {
-		edges[i].alpha = sidebarAlpha;
-	}
-	edges[(size_t)ScreenEdgePosition::TOP_CENTER].alpha = 1.0f;
-
+	float typeAlpha[(size_t)OSDType::VALUE_COUNT]{};
 	ScreenEdgePosition typeEdges[(size_t)OSDType::VALUE_COUNT]{};
 	// Default to the configured position.
 	for (int i = 0; i < (size_t)OSDType::VALUE_COUNT; i++) {
+		typeAlpha[i] = ingameAlpha;
 		typeEdges[i] = (ScreenEdgePosition)g_Config.iNotificationPos;
+	}
+
+	// These types can always show, independent of whether we're in the menu or not.
+	static const OSDType fullAlphaTypes[] = {OSDType::MESSAGE_ERROR, OSDType::MESSAGE_INFO, OSDType::MESSAGE_WARNING, OSDType::MESSAGE_SUCCESS, OSDType::MESSAGE_FILE_LINK, OSDType::PROGRESS_BAR, OSDType::MESSAGE_CENTERED_ERROR, OSDType::MESSAGE_CENTERED_WARNING};
+	for (auto type : fullAlphaTypes) {
+		typeAlpha[(int)type] = 1.0f;
 	}
 
 	typeEdges[(size_t)OSDType::ACHIEVEMENT_CHALLENGE_INDICATOR] = (ScreenEdgePosition)g_Config.iAchievementsChallengePos;
@@ -309,11 +165,14 @@ void OnScreenMessagesView::Draw(UIContext &dc) {
 	typeEdges[(size_t)OSDType::ACHIEVEMENT_UNLOCKED] = (ScreenEdgePosition)g_Config.iAchievementsUnlockedPos;
 	typeEdges[(size_t)OSDType::MESSAGE_CENTERED_WARNING] = ScreenEdgePosition::CENTER;
 	typeEdges[(size_t)OSDType::MESSAGE_CENTERED_ERROR] = ScreenEdgePosition::CENTER;
-	typeEdges[(size_t)OSDType::TRANSPARENT_STATUS] = ScreenEdgePosition::TOP_LEFT;
+	typeEdges[(size_t)OSDType::STATUS_ICON] = ScreenEdgePosition::TOP_LEFT;
 	typeEdges[(size_t)OSDType::PROGRESS_BAR] = ScreenEdgePosition::TOP_CENTER;  // These only function at the top currently, needs fixing.
 
-	dc.SetFontStyle(dc.theme->uiFont);
+	dc.SetFontStyle(dc.GetTheme().uiFont);
 	dc.SetFontScale(1.0f, 1.0f);
+
+	// Indexed by the enum ScreenEdgePosition.
+	LayoutEdge edges[(size_t)ScreenEdgePosition::VALUE_COUNT]{};
 
 	// First pass: Measure all the sides.
 	for (size_t i = 0; i < entries.size(); i++) {
@@ -370,14 +229,17 @@ void OnScreenMessagesView::Draw(UIContext &dc) {
 			measuredEntry.style = AchievementRenderStyle::UNLOCKED;
 			MeasureAchievement(dc, achievement, AchievementRenderStyle::UNLOCKED, &measuredEntry.w, &measuredEntry.h);
 			measuredEntry.h1 = measuredEntry.h;
-			measuredEntry.w = 550.0f;
+			measuredEntry.w = std::min(bounds_.w, 550.0f);
 			break;
 		}
 		case OSDType::PROGRESS_BAR:
-			MeasureOSDProgressBar(dc, entry, &measuredEntry.w, &measuredEntry.h);
+		{
+			measuredEntry.h = 36;
+			measuredEntry.w = std::min(450.0f, bounds_.w - 50.0f);
 			break;
+		}
 		default:
-			MeasureOSDEntry(dc, entry, measuredEntry.align, &measuredEntry.w, &measuredEntry.h, &measuredEntry.h1);
+			MeasureOSDEntry(dc, entry, measuredEntry.align, bounds_.w, &measuredEntry.w, &measuredEntry.h, &measuredEntry.h1);
 			break;
 		}
 
@@ -400,7 +262,7 @@ void OnScreenMessagesView::Draw(UIContext &dc) {
 		}
 
 		// First, compute the start position.
-		float y = padding;
+		float y = padding + bounds_.y;
 		int horizAdj = 0;
 		int vertAdj = 0;
 		switch ((ScreenEdgePosition)i) {
@@ -418,9 +280,9 @@ void OnScreenMessagesView::Draw(UIContext &dc) {
 
 		if (vertAdj == 0) {
 			// Center vertically
-			y = (bounds_.h - edges[i].height) * 0.5f;
+			y = bounds_.centerY() - edges[i].height * 0.5f;
 		} else if (vertAdj == 1) {
-			y = (bounds_.h - edges[i].height);
+			y = bounds_.y2() - edges[i].height;
 		}
 
 		// Then, loop through the entries and those belonging here, get rendered here.
@@ -430,16 +292,16 @@ void OnScreenMessagesView::Draw(UIContext &dc) {
 				continue;
 			}
 			auto &measuredEntry = measuredEntries[j];
-			float alpha = measuredEntry.alpha * edges[i].alpha;
+			float alpha = measuredEntry.alpha * typeAlpha[(size_t)entry.type];
 
-			Bounds b(padding, y, measuredEntry.w, measuredEntry.h);
+			Bounds b(bounds_.x + padding, y, measuredEntry.w, measuredEntry.h);
 
 			if (horizAdj == 0) {
 				// Centered
-				b.x = (bounds_.w - b.w) * 0.5f;
+				b.x = bounds_.centerX() - b.w * 0.5f;
 			} else if (horizAdj == 1) {
 				// Right-aligned
-				b.x = bounds_.w - (b.w + padding);
+				b.x = bounds_.x2() - (measuredEntry.w + padding);
 			}
 
 			switch (entry.type) {
@@ -447,7 +309,9 @@ void OnScreenMessagesView::Draw(UIContext &dc) {
 			case OSDType::ACHIEVEMENT_CHALLENGE_INDICATOR:
 			{
 				const rc_client_achievement_t *achievement = rc_client_get_achievement_info(Achievements::GetClient(), entry.numericID);
-				RenderAchievement(dc, achievement, measuredEntry.style, b, alpha, entry.startTime, now, false);
+				if (achievement) {
+					RenderAchievement(dc, achievement, measuredEntry.style, b, alpha, entry.startTime, now, false);
+				}
 				break;
 			}
 			case OSDType::LEADERBOARD_TRACKER:
@@ -460,16 +324,16 @@ void OnScreenMessagesView::Draw(UIContext &dc) {
 			{
 				// Scale down if height doesn't fit.
 				float scale = 1.0f;
-				if (measuredEntry.h > bounds_.h - y) {
+				if (measuredEntry.h > bounds_.y2() - y) {
 					// Scale down!
-					scale = std::max(0.15f, (bounds_.h - y) / measuredEntry.h);
+					scale = std::max(0.15f, (bounds_.y2() - y) / measuredEntry.h);
 					dc.SetFontScale(scale, scale);
 					b.w *= scale;
 					b.h *= scale;
 				}
 
 				float alpha = Clamp((float)(entry.endTime - now) * 4.0f, 0.0f, 1.0f);
-				RenderOSDEntry(dc, entry, b, measuredEntry.h1, measuredEntry.align, alpha);
+				RenderOSDEntry(dc, entry, b, measuredEntry.h1, measuredEntry.align, alpha, now);
 
 				switch (entry.type) {
 				case OSDType::MESSAGE_INFO:
@@ -490,7 +354,6 @@ void OnScreenMessagesView::Draw(UIContext &dc) {
 				break;
 			}
 			}
-
 
 			y += (measuredEntry.h + 4.0f) * measuredEntry.alpha;
 		}
@@ -529,7 +392,7 @@ bool OnScreenMessagesView::Dismiss(float x, float y) {
 bool OSDOverlayScreen::UnsyncTouch(const TouchInput &touch) {
 	// Don't really need to forward.
 	// UIScreen::UnsyncTouch(touch);
-	if ((touch.flags & TOUCH_DOWN) && osmView_) {
+	if ((touch.flags & TouchInputFlags::DOWN) && osmView_) {
 		return osmView_->Dismiss(touch.x, touch.y);
 	} else {
 		return false;
@@ -554,26 +417,24 @@ void OSDOverlayScreen::DrawForeground(UIContext &ui) {
 
 void OSDOverlayScreen::update() {
 	// Partial version of UIScreen::update() but doesn't do event processing to avoid duplicate event processing.
-	bool vertical = UseVerticalLayout();
-	if (vertical != lastVertical_) {
+	DeviceOrientation orientation = GetDeviceOrientation();
+	if (orientation != lastOrientation_) {
 		RecreateViews();
-		lastVertical_ = vertical;
+		lastOrientation_ = orientation;
 	}
 
 	DoRecreateViews();
 }
 
 void NoticeView::GetContentDimensionsBySpec(const UIContext &dc, UI::MeasureSpec horiz, UI::MeasureSpec vert, float &w, float &h) const {
-	Bounds bounds(0, 0, layoutParams_->width, layoutParams_->height);
-	if (bounds.w < 0) {
+	float layoutWidth = layoutParams_->width;
+	if (layoutWidth < 0) {
 		// If there's no size, let's grow as big as we want.
-		bounds.w = horiz.size;
+		layoutWidth = horiz.size;
 	}
-	if (bounds.h < 0) {
-		bounds.h = vert.size;
-	}
-	ApplyBoundsBySpec(bounds, horiz, vert);
-	MeasureNotice(dc, level_, text_, detailsText_, iconName_, 0, &w, &h, &height1_);
+	ApplyBoundBySpec(layoutWidth, horiz);
+	const int align = wrapText_ ? FLAG_WRAP_TEXT : 0;
+	MeasureNotice(dc, level_, text_, detailsText_, iconName_, align, layoutWidth, &w, &h, &height1_);
 	// Layout hack! Some weird problems with the layout that I can't figure out right now..
 	if (squishy_) {
 		w = 50.0;
@@ -582,6 +443,7 @@ void NoticeView::GetContentDimensionsBySpec(const UIContext &dc, UI::MeasureSpec
 
 void NoticeView::Draw(UIContext &dc) {
 	dc.PushScissor(bounds_);
-	RenderNotice(dc, bounds_, height1_, level_, text_, detailsText_, iconName_, 0, 1.0f, false);
+	const int align = wrapText_ ? FLAG_WRAP_TEXT : 0;
+	RenderNotice(dc, bounds_, height1_, level_, text_, detailsText_, iconName_, align, 1.0f, OSDMessageFlags::None, 0.0f);
 	dc.PopScissor();
 }

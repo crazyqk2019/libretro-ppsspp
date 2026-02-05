@@ -20,11 +20,20 @@
 #include <cstdint>
 #include <cmath>
 #include <string>
+#include <string_view>
 #ifndef _MSC_VER
 #include <strings.h>
 #endif
 #include "Common/Common.h"
 #include "Common/CommonFuncs.h"
+
+struct ConfigBlock {
+	virtual ~ConfigBlock() = default;
+	virtual bool CanResetToDefault() const { return false; }
+	// If a block returns false here (like Config itself does), resetting to default will happen by the old per-setting mechanism.
+	virtual bool ResetToDefault(std::string_view blockName) { return false; }
+	virtual size_t Size() const { return sizeof(ConfigBlock); }  // For sanity checks
+};
 
 constexpr int PSP_MODEL_FAT = 0;
 constexpr int PSP_MODEL_SLIM = 1;
@@ -32,6 +41,10 @@ constexpr int PSP_DEFAULT_FIRMWARE = 660;
 constexpr int VOLUME_OFF = 0;
 constexpr int VOLUME_FULL = 10;
 constexpr int VOLUMEHI_FULL = 100;  // for newer volume params. will convert them all later
+constexpr int AUDIOSAMPLES_MIN = 0;
+constexpr int AUDIOSAMPLES_MAX = 2048;
+constexpr float NO_DEFAULT_FLOAT = -1000000.0f;
+constexpr int NO_DEFAULT_INT = -1000000;
 
 // This matches exactly the old shift-based curve.
 float Volume10ToMultiplier(int volume);
@@ -46,11 +59,11 @@ int MultiplierToVolume100(float multiplier);
 float UIScaleFactorToMultiplier(int factor);
 
 struct ConfigTouchPos {
-	float x;
-	float y;
-	float scale;
+	float x = -1.0f;
+	float y = -1.0f;
+	float scale = 1.0f;
 	// Note: Show is not used for all settings.
-	bool show;
+	bool show = true;
 };
 
 struct ConfigCustomButton {
@@ -73,8 +86,8 @@ enum {
 	ROTATION_LOCKED_HORIZONTAL = 1,
 	ROTATION_LOCKED_VERTICAL = 2,
 	ROTATION_LOCKED_HORIZONTAL180 = 3,
-	ROTATION_LOCKED_VERTICAL180 = 4,
-	ROTATION_AUTO_HORIZONTAL = 5,
+	ROTATION_LOCKED_VERTICAL180 = 4,  // Deprecated
+	ROTATION_AUTO_HORIZONTAL = 5,     // Deprecated
 };
 
 enum TextureFiltering {
@@ -82,6 +95,20 @@ enum TextureFiltering {
 	TEX_FILTER_FORCE_NEAREST = 2,
 	TEX_FILTER_FORCE_LINEAR = 3,
 	TEX_FILTER_AUTO_MAX_QUALITY = 4,
+};
+
+// Can't be named WindowState due to collision with SDL.
+enum class WindowSizeState {
+	Normal = 0,
+	Minimized = 1,
+	Maximized = 2,
+};
+
+enum ReplacementTextureLoadSpeed {
+	SLOW = 0,
+	MEDIUM = 1,
+	FAST = 2,
+	INSTANT = 3,
 };
 
 enum BufferFilter {
@@ -97,7 +124,6 @@ enum class ScreenshotMode {
 // Software is not among these because it will have one of these perform the blit to display.
 enum class GPUBackend {
 	OPENGL = 0,
-	DIRECT3D9 = 1,
 	DIRECT3D11 = 2,
 	VULKAN = 3,
 };
@@ -109,6 +135,12 @@ enum class DepthRasterMode {
 	FORCE_ON = 3,
 };
 
+enum class AudioSyncMode {
+	GRANULAR = 0,
+	CLASSIC_PITCH = 1,
+};
+
+// TODO: We can make this more fine-grained.
 enum class RestoreSettingsBits : int {
 	SETTINGS = 1,
 	CONTROLS = 2,
@@ -116,14 +148,23 @@ enum class RestoreSettingsBits : int {
 };
 ENUM_CLASS_BITOPS(RestoreSettingsBits);
 
+// Modules that are candidates for disabling HLE of.
+enum class DisableHLEFlags : int {
+	sceFont = (1 << 0),
+	sceAtrac = (1 << 1),
+	scePsmf = (1 << 2),
+	scePsmfPlayer = (1 << 3),
+	sceMpeg = (1 << 4),
+	sceMp3 = (1 << 5),
+	sceParseHttp = (1 << 6),
+	sceCcc = (1 << 7),  // character conversion library.
+	Count = 8,
+	// TODO: Some of the networking libraries may be interesting candidates, like HTTP.
+};
+ENUM_CLASS_BITOPS(DisableHLEFlags);
+
 std::string GPUBackendToString(GPUBackend backend);
 GPUBackend GPUBackendFromString(std::string_view backend);
-
-enum AudioBackendType {
-	AUDIO_BACKEND_AUTO,
-	AUDIO_BACKEND_DSOUND,
-	AUDIO_BACKEND_WASAPI,
-};
 
 // For iIOTimingMethod.
 enum IOTimingMethods {
@@ -150,6 +191,8 @@ enum class BackgroundAnimation {
 	RECENT_GAMES = 2,
 	WAVE = 3,
 	MOVING_BACKGROUND = 4,
+	BOUNCING_ICON = 5,
+	FLOATING_SYMBOLS_COLORED = 6,
 };
 
 // iOS only
@@ -163,6 +206,12 @@ enum class ShowStatusFlags {
 	FPS_COUNTER = 1 << 1,
 	SPEED_COUNTER = 1 << 2,
 	BATTERY_PERCENT = 1 << 3,
+};
+
+enum class SplineQuality {
+	LOW_QUALITY = 0,
+	MEDIUM_QUALITY = 1,
+	HIGH_QUALITY = 2,
 };
 
 enum class DumpFileType {

@@ -47,10 +47,11 @@ enum class LaunchUrlType {
 	BROWSER_URL,
 	MARKET_URL,
 	EMAIL_ADDRESS,
+	LOCAL_FILE,
 };
 
 void System_Vibrate(int length_ms);
-void System_LaunchUrl(LaunchUrlType urlType, const char *url);
+void System_LaunchUrl(LaunchUrlType urlType, std::string_view url);
 
 // It's sometimes a little unclear what should be a request, and what should be a separate function.
 // Going forward, "optional" things (PPSSPP will still function alright without it) will be requests,
@@ -78,7 +79,7 @@ enum class SystemRequestType {
 	COPY_TO_CLIPBOARD,
 	SHARE_TEXT,
 	SET_WINDOW_TITLE,
-	TOGGLE_FULLSCREEN_STATE,
+	APPLY_FULLSCREEN_STATE,
 	GRAPHICS_BACKEND_FAILED_ALERT,
 	CREATE_GAME_SHORTCUT,
 	SHOW_FILE_IN_FOLDER,
@@ -98,6 +99,14 @@ enum class SystemRequestType {
 	MICROPHONE_COMMAND,
 
 	RUN_CALLBACK_IN_WNDPROC,
+
+	MOVE_TO_TRASH,
+
+	// for iOS IAP support
+	IAP_RESTORE_PURCHASES,
+	IAP_MAKE_PURCHASE,
+
+	OPEN_DISPLAY_SETTINGS,
 };
 
 // Run a closure on the main thread. Used to safely implement UI that runs on another thread.
@@ -114,6 +123,7 @@ PermissionStatus System_GetPermissionStatus(SystemPermission permission);
 void System_AskForPermission(SystemPermission permission);
 
 // This will get muddy with multi-screen support :/ But this will always be the type of the main device.
+// These are the return values from System_GetPropertyInt(SYSPROP_DEVICE_TYPE).
 enum SystemDeviceType {
 	DEVICE_TYPE_MOBILE = 0,  // phones and pads
 	DEVICE_TYPE_TV = 1,  // Android TV and similar
@@ -136,6 +146,7 @@ enum SystemProperty {
 	SYSPROP_CLIPBOARD_TEXT,
 	SYSPROP_GPUDRIVER_VERSION,
 	SYSPROP_BUILD_VERSION,
+	SYSPROP_COMPUTER_NAME,
 
 	// Separate SD cards or similar.
 	// Need hacky solutions to get at this.
@@ -219,6 +230,13 @@ enum SystemProperty {
 
 	SYSPROP_CAN_READ_BATTERY_PERCENTAGE,
 	SYSPROP_BATTERY_PERCENTAGE,
+
+	SYSPROP_ENOUGH_RAM_FOR_FULL_ISO,
+	SYSPROP_HAS_TRASH_BIN,
+
+	SYSPROP_USE_IAP,
+	SYSPROP_USE_APP_STORE,
+	SYSPROP_SUPPORTS_SHARE_TEXT,
 };
 
 enum class SystemNotification {
@@ -243,6 +261,7 @@ enum class SystemNotification {
 	UI_STATE_CHANGED,
 	AUDIO_MODE_CHANGED,
 	APP_SWITCH_MODE_CHANGED,
+	PAD_STATE_CHANGED,
 };
 
 // I guess it's not super great architecturally to centralize this, since it's not general - but same with a lot of
@@ -268,6 +287,7 @@ enum class UIMessage {
 	APP_RESUMED,
 	REQUEST_PLAY_SOUND,
 	WINDOW_MINIMIZED,
+	WINDOW_RESTORED,
 	LOST_FOCUS,
 	GOT_FOCUS,
 	GPU_CONFIG_CHANGED,
@@ -279,6 +299,8 @@ enum class UIMessage {
 	GAMESETTINGS_SEARCH,
 	SAVEDATA_SEARCH,
 	RESTART_GRAPHICS,
+	RECENT_FILES_CHANGED,
+	SAVE_FRAME_DUMP,
 };
 
 std::string System_GetProperty(SystemProperty prop);
@@ -295,7 +317,7 @@ bool System_AudioRecordingIsAvailable();
 bool System_AudioRecordingState();
 
 // This will be changed to take an enum. Replacement for the old NativeMessageReceived.
-void System_PostUIMessage(UIMessage message, const std::string &param = "");
+void System_PostUIMessage(UIMessage message, std::string_view param = "");
 
 // For these functions, most platforms will use the implementation provided in UI/AudioCommon.cpp,
 // no need to implement separately.

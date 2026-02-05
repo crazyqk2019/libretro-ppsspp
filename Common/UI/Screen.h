@@ -28,6 +28,7 @@ namespace UI {
 }
 
 enum DialogResult {
+	DR_NONE,
 	DR_OK,
 	DR_CANCEL,
 	DR_YES,
@@ -108,6 +109,9 @@ public:
 
 protected:
 	int GetRequesterToken();
+	void WipeRequesterToken() {
+		token_ = -1;
+	}
 
 private:
 	ScreenManager *screenManager_;
@@ -165,7 +169,6 @@ public:
 	bool key(const KeyInput &key);
 	void axis(const AxisInput *axes, size_t count);
 
-	// Generic facility for gross hacks :P
 	void sendMessage(UIMessage message, const char *value);
 
 	const Screen *topScreen() const {
@@ -174,6 +177,8 @@ public:
 	Screen *topScreen() {
 		return stack_.empty() ? nullptr : stack_.back().screen;
 	}
+
+	void cancelScreensAbove(Screen *screen);
 
 	void getFocusPosition(float &x, float &y, float &z);
 
@@ -198,6 +203,8 @@ private:
 
 	Screen *backgroundScreen_ = nullptr;
 	Screen *overlayScreen_ = nullptr;
+
+	Screen *cancelScreensAbove_ = nullptr;
 
 	struct Layer {
 		Screen *screen;

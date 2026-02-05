@@ -1,16 +1,18 @@
 #include "ppsspp_config.h"
-#include "Common/Net/Resolve.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
+#include <map>
 
 #include "Common/Log.h"
 #include "Common/TimeUtil.h"
+#include "Common/StringUtils.h"
 #include "Common/Data/Encoding/Utf8.h"
 #include "Common/Net/SocketCompat.h"
+#include "Common/Net/Resolve.h"
 
 #ifndef HTTPS_NOT_AVAILABLE
 #include "ext/naett/naett.h"
@@ -24,13 +26,17 @@ extern JavaVM *gJvm;
 namespace net {
 
 static bool g_naettInitialized;
+static bool g_wsaInitialized;
 
-void Init()
-{
+void Init() {
 #ifdef _WIN32
 	// WSA does its own internal reference counting, no need to keep track of if we inited or not.
-	WSADATA wsaData = {0};
-	WSAStartup(MAKEWORD(2, 2), &wsaData);
+	WSADATA wsaData{};
+	if (FAILED(WSAStartup(MAKEWORD(2, 2), &wsaData))) {
+		ERROR_LOG(Log::sceNet, "WSAStartup failed");
+	} else {
+		g_wsaInitialized = true;
+	}
 #endif
 	if (!g_naettInitialized) {
 #ifndef HTTPS_NOT_AVAILABLE
@@ -45,11 +51,149 @@ void Init()
 	}
 }
 
-void Shutdown()
-{
+void Shutdown() {
 #ifdef _WIN32
-	WSACleanup();
+	if (g_wsaInitialized) {
+		WSACleanup();
+	}
 #endif
+}
+
+// This checks whether a TCP connection to host : port can be established within a given timeout.
+// It does this by attempting a new, non - blocking TCP connect() and waiting for it to succeed or time out.
+// The socket is closed immediately after the check.
+// It does not inspect or detect existing connections from other applications; it only tests reachability by making its own connection attempt.
+bool HostPortExists(const std::string &host, int port, int timeout_ms) {
+	if (host.empty() || (port <= 0 || port > 65535) || timeout_ms < 0) return false;
+
+	addrinfo hints;
+	addrinfo* res = nullptr;
+
+	std::memset(&hints, 0, sizeof(hints));
+	hints.ai_socktype = SOCK_STREAM; // TCP
+	hints.ai_family = AF_UNSPEC;     // IPv4 or IPv6
+
+	int gai = getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res);
+	if (gai != 0) {
+		// getaddrinfo failed (DNS resolve failed or bad port)
+		return false;
+	}
+
+	bool ok = false;
+
+	for (addrinfo* p = res; p != nullptr && !ok; p = p->ai_next) {
+		// create socket
+		int sockfd =
+#ifdef _WIN32
+		(int)socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+#else
+			socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+#endif
+		if (sockfd < 0) {
+			continue;
+		}
+
+		// make non-blocking
+#ifdef _WIN32
+		unsigned long mode = 1;
+		ioctlsocket((SOCKET)sockfd, FIONBIO, &mode);
+#else
+		int flags = fcntl(sockfd, F_GETFL, 0);
+		if (flags == -1) flags = 0;
+		fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+#endif
+
+		// try connect
+		int conn = connect(sockfd, p->ai_addr, (int)p->ai_addrlen);
+#ifdef _WIN32
+		if (conn == 0) {
+			ok = true; // immediate success
+		}
+		else {
+			int err = WSAGetLastError();
+			if (err == WSAEWOULDBLOCK || err == WSAEINPROGRESS) {
+				// fall through to select
+			}
+			else {
+				// immediate failure
+			}
+		}
+#else
+		if (conn == 0) {
+			ok = true; // immediate success
+		}
+		else {
+			if (errno == EINPROGRESS) {
+				// fall through to select
+			}
+			else {
+				// immediate failure
+			}
+		}
+#endif
+
+		if (!ok) {
+			// wait for writable with timeout
+			fd_set writefds;
+			FD_ZERO(&writefds);
+#ifdef _WIN32
+			FD_SET((SOCKET)sockfd, &writefds);
+#else
+			FD_SET(sockfd, &writefds);
+#endif
+
+			fd_set exceptfds;
+			FD_ZERO(&exceptfds);
+#ifdef _WIN32
+			FD_SET((SOCKET)sockfd, &exceptfds);
+#else
+			FD_SET(sockfd, &exceptfds);
+#endif
+
+			timeval tv;
+			tv.tv_sec = timeout_ms / 1000;
+			tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+			int sel = select(
+#ifdef _WIN32
+				0,
+#else
+				sockfd + 1,
+#endif
+				nullptr, &writefds, &exceptfds, &tv);
+
+			if (sel > 0) {
+				// check for error on socket
+				int sock_err = 0;
+				socklen_t len = sizeof(sock_err);
+#ifdef _WIN32
+				int ret = getsockopt((SOCKET)sockfd, SOL_SOCKET, SO_ERROR, (char*)&sock_err, &len);
+#else
+				int ret = getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &sock_err, &len);
+#endif
+#ifdef _WIN32
+				bool writable = FD_ISSET(static_cast<SOCKET>(sockfd), &writefds) != 0;
+#else
+				bool writable = FD_ISSET(sockfd, &writefds) != 0;
+#endif
+
+				if (ret == 0 && sock_err == 0 && writable) {
+					ok = true;
+				}
+			}
+			// else timeout or error -> try next addr
+		}
+
+		// close socket
+#ifdef _WIN32
+		closesocket((SOCKET)sockfd);
+#else
+		close(sockfd);
+#endif
+	}
+
+	freeaddrinfo(res);
+	return ok;
 }
 
 // NOTE: Due to the nature of getaddrinfo, this can block indefinitely. Not good.
@@ -111,7 +255,7 @@ void DNSResolveFree(addrinfo *res)
 		freeaddrinfo(res);
 }
 
-bool GetIPList(std::vector<std::string> &IP4s) {
+bool GetLocalIP4List(std::vector<std::string> &IP4s) {
 	char ipstr[INET6_ADDRSTRLEN]; // We use IPv6 length since it's longer than IPv4
 // getifaddrs first appeared in glibc 2.3, On Android officially supported since __ANDROID_API__ >= 24
 #if defined(_IFADDRS_H_) || (__GLIBC__ > 2) || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 3) || (__ANDROID_API__ >= 24)
@@ -143,7 +287,7 @@ bool GetIPList(std::vector<std::string> &IP4s) {
 		return true;
 	}
 #elif defined(SIOCGIFCONF) // Better detection on Linux/UNIX/MacOS/some Android
-	INFO_LOG(Log::sceNet, "GetIPList from SIOCGIFCONF");
+	INFO_LOG(Log::IO, "GetIPList from SIOCGIFCONF");
 	static struct ifreq ifreqs[32];
 	struct ifconf ifc{};
 	ifc.ifc_req = ifreqs;
@@ -151,13 +295,13 @@ bool GetIPList(std::vector<std::string> &IP4s) {
 
 	int sd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sd < 0) {
-		ERROR_LOG(Log::sceNet, "GetIPList failed to create socket (result = %i, errno = %i)", sd, socket_errno);
+		ERROR_LOG(Log::IO, "GetIPList failed to create socket (result = %i, errno = %i)", sd, socket_errno);
 		return false;
 	}
 
 	int r = ioctl(sd, SIOCGIFCONF, (char*)&ifc);
 	if (r != 0) {
-		ERROR_LOG(Log::sceNet, "GetIPList failed ioctl/SIOCGIFCONF (result = %i, errno = %i)", r, socket_errno);
+		ERROR_LOG(Log::IO, "GetIPList failed ioctl/SIOCGIFCONF (result = %i, errno = %i)", r, socket_errno);
 		return false;
 	}
 
@@ -173,7 +317,7 @@ bool GetIPList(std::vector<std::string> &IP4s) {
 		r = ioctl(sd, SIOCGIFADDR, item);
 		if (r != 0)
 		{
-			ERROR_LOG(Log::sceNet, "GetIPList failed ioctl/SIOCGIFADDR (i = %i, result = %i, errno = %i)", i, r, socket_errno);
+			ERROR_LOG(Log::IO, "GetIPList failed ioctl/SIOCGIFADDR (i = %i, result = %i, errno = %i)", i, r, socket_errno);
 		}
 
 		if (ifreqs[i].ifr_addr.sa_family == AF_INET) {
@@ -192,8 +336,8 @@ bool GetIPList(std::vector<std::string> &IP4s) {
 
 	close(sd);
 	return true;
-#else // Fallback to POSIX/Cross-platform way but may not works well on Linux (ie. only shows 127.0.0.1)
-	INFO_LOG(Log::sceNet, "GetIPList from Fallback");
+#else // Fallback to POSIX/Cross-platform way but may not work well on Linux (ie. only shows 127.0.0.1)
+	DEBUG_LOG(Log::IO, "GetIPList from fallback method");
 	struct addrinfo hints, * res, * p;
 	memset(&hints, 0, sizeof hints);
 	hints.ai_family = AF_UNSPEC; // AF_INET or AF_INET6 to force version
@@ -411,7 +555,15 @@ static bool parse_dns_response(unsigned char *buffer, size_t response_len, uint3
 	return false;
 }
 
-// This was written by ChatGPT! (And then cleaned up...)
+// This was written by ChatGPT, although not much of that remains, after all the cleanup and fixing...
+
+// Specialized cache for the direct DNS lookups
+struct DNSCacheEntry {
+	uint32_t ipv4Address;
+};
+
+static std::map<std::string, DNSCacheEntry> g_directDNSCache;
+
 bool DirectDNSLookupIPV4(const char *dns_server_ip, const char *domain, uint32_t *ipv4_addr) {
 	if (!strlen(dns_server_ip)) {
 		WARN_LOG(Log::sceNet, "Direct lookup: DNS server not specified");
@@ -421,6 +573,15 @@ bool DirectDNSLookupIPV4(const char *dns_server_ip, const char *domain, uint32_t
 	if (!strlen(domain)) {
 		ERROR_LOG(Log::sceNet, "Direct lookup: Can't look up an empty domain");
 		return false;
+	}
+
+	std::string key = StringFromFormat("%s:%s", dns_server_ip, domain);
+
+	auto iter = g_directDNSCache.find(key);
+	if (iter != g_directDNSCache.end()) {
+		INFO_LOG(Log::sceNet, "Returning cached response from direct DNS request for '%s' to DNS server '%s", domain, dns_server_ip);
+		*ipv4_addr = iter->second.ipv4Address;
+		return true;
 	}
 
 	SOCKET sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -470,11 +631,17 @@ bool DirectDNSLookupIPV4(const char *dns_server_ip, const char *domain, uint32_t
 		closesocket(sockfd);
 		return 1;
 	}
+
 	// Close socket
 	closesocket(sockfd);
 
 	// Done communicating, time to parse.
-	return parse_dns_response(buffer, response_len, ipv4_addr);
+	if (!parse_dns_response(buffer, response_len, ipv4_addr)) {
+		return false;
+	}
+
+	g_directDNSCache[key] = DNSCacheEntry{ *ipv4_addr };
+	return true;
 }
 
 }  // namespace net

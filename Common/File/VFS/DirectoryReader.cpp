@@ -77,9 +77,9 @@ VFSOpenFile *DirectoryReader::OpenFileForRead(VFSFileReference *vfsReference, si
 	if (!file) {
 		return nullptr;
 	}
-	fseek(file, 0, SEEK_END);
-	*size = ftell(file);
-	fseek(file, 0, SEEK_SET);
+	File::Fseek(file, 0, SEEK_END);
+	*size = File::Ftell(file);
+	File::Fseek(file, 0, SEEK_SET);
 	DirectoryReaderOpenFile *openFile = new DirectoryReaderOpenFile();
 	openFile->file = file;
 	return openFile;
@@ -87,7 +87,7 @@ VFSOpenFile *DirectoryReader::OpenFileForRead(VFSFileReference *vfsReference, si
 
 void DirectoryReader::Rewind(VFSOpenFile *vfsOpenFile) {
 	DirectoryReaderOpenFile *openFile = (DirectoryReaderOpenFile *)vfsOpenFile;
-	fseek(openFile->file, 0, SEEK_SET);
+	File::Fseek(openFile->file, 0, SEEK_SET);
 }
 
 size_t DirectoryReader::Read(VFSOpenFile *vfsOpenFile, void *buffer, size_t length) {
@@ -97,8 +97,14 @@ size_t DirectoryReader::Read(VFSOpenFile *vfsOpenFile, void *buffer, size_t leng
 
 void DirectoryReader::CloseFile(VFSOpenFile *vfsOpenFile) {
 	DirectoryReaderOpenFile *openFile = (DirectoryReaderOpenFile *)vfsOpenFile;
+	_dbg_assert_(openFile);
+	if (!openFile) {
+		return;
+	}
 	_dbg_assert_(openFile->file != nullptr);
-	fclose(openFile->file);
-	openFile->file = nullptr;
+	if (openFile->file) {
+		fclose(openFile->file);
+		openFile->file = nullptr;
+	}
 	delete openFile;
 }

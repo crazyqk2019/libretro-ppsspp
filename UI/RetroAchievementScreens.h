@@ -7,15 +7,15 @@
 #include "Common/UI/UIScreen.h"
 #include "Common/UI/ViewGroup.h"
 #include "Core/RetroAchievements.h"
-#include "UI/MiscScreens.h"
+#include "UI/BaseScreens.h"
 #include "UI/TabbedDialogScreen.h"
 
 #include "ext/rcheevos/include/rc_client.h"
 
 // Lists the achievements and leaderboards for one game.
-class RetroAchievementsListScreen : public TabbedUIDialogScreenWithGameBackground {
+class RetroAchievementsListScreen : public UITabbedBaseDialogScreen {
 public:
-	RetroAchievementsListScreen(const Path &gamePath) : TabbedUIDialogScreenWithGameBackground(gamePath) {}
+	RetroAchievementsListScreen(const Path &gamePath) : UITabbedBaseDialogScreen(gamePath) {}
 	const char *tag() const override { return "RetroAchievementsListScreen"; }
 
 	void CreateTabs() override;
@@ -30,9 +30,9 @@ private:
 };
 
 // Lets you manage your account, and shows some achievement stats and stuff.
-class RetroAchievementsSettingsScreen : public TabbedUIDialogScreenWithGameBackground {
+class RetroAchievementsSettingsScreen : public UITabbedBaseDialogScreen {
 public:
-	RetroAchievementsSettingsScreen(const Path &gamePath) : TabbedUIDialogScreenWithGameBackground(gamePath) {}
+	RetroAchievementsSettingsScreen(const Path &gamePath) : UITabbedBaseDialogScreen(gamePath) {}
 	~RetroAchievementsSettingsScreen();
 	const char *tag() const override { return "RetroAchievementsSettingsScreen"; }
 
@@ -47,11 +47,10 @@ private:
 	void CreateCustomizeTab(UI::ViewGroup *viewGroup);
 	void CreateDeveloperToolsTab(UI::ViewGroup *viewGroup);
 
-	std::string username_;
 	std::string password_;
 };
 
-class RetroAchievementsLeaderboardScreen : public TabbedUIDialogScreenWithGameBackground {
+class RetroAchievementsLeaderboardScreen : public UITabbedBaseDialogScreen {
 public:
 	RetroAchievementsLeaderboardScreen(const Path &gamePath, int leaderboardID);
 	~RetroAchievementsLeaderboardScreen();
@@ -66,6 +65,7 @@ protected:
 	bool ShowSearchControls() const override { return false; }
 
 private:
+	void CreateLeaderboardTab(UI::LinearLayout *layout, const rc_client_leaderboard_t *leaderboard);
 	void FetchEntries();
 	void Poll();
 
@@ -98,10 +98,10 @@ public:
 		layoutParams_->height = UI::WRAP_CONTENT;  // Override the standard Item fixed height.
 	}
 
-	void Click() override;
 	void Draw(UIContext &dc) override;
 	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
 private:
+	void ClickInternal() override;
 	const rc_client_achievement_t *achievement_;
 };
 
@@ -112,7 +112,7 @@ public:
 	}
 
 	void Draw(UIContext &dc) override;
-	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
+	void GetContentDimensionsBySpec(const UIContext &dc, UI::MeasureSpec horiz, UI::MeasureSpec vert, float &w, float &h) const override;
 };
 
 class LeaderboardSummaryView : public UI::ClickableItem {

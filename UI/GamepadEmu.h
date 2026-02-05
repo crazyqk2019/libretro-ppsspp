@@ -26,35 +26,50 @@
 #include "Core/HLE/sceCtrl.h"
 #include "UI/EmuScreen.h"
 
-class GamepadView : public UI::View {
+struct TouchControlConfig;
+class ControlMapper;
+
+class GamepadEmuView : public UI::AnchorLayout {
 public:
-	GamepadView(const char *key, UI::LayoutParams *layoutParams);
+	GamepadEmuView(const TouchControlConfig &config, float xres, float yres, bool *pause, ControlMapper *controlMapper, UI::LayoutParams *layoutParams);
+	void Update() override;
+};
+
+class GamepadComponent : public UI::View {
+public:
+	GamepadComponent(std::string_view key, UI::LayoutParams *layoutParams);
 
 	bool Key(const KeyInput &input) override {
 		return false;
 	}
 	std::string DescribeText() const override;
+	virtual bool IsDown() const = 0;
+	virtual bool IsDownForFadeoutCheck() const {
+		return IsDown();
+	}
 
 protected:
 	std::string key_;
 };
 
-class MultiTouchButton : public GamepadView {
+class MultiTouchButton : public GamepadComponent {
 public:
-	MultiTouchButton(const char *key, ImageID bgImg, ImageID bgDownImg, ImageID img, float scale, UI::LayoutParams *layoutParams)
-		: GamepadView(key, layoutParams), scale_(scale), bgImg_(bgImg), bgDownImg_(bgDownImg), img_(img) {
+	MultiTouchButton(std::string_view key, ImageID bgImg, ImageID bgDownImg, ImageID img, float scale, UI::LayoutParams *layoutParams)
+		: GamepadComponent(key, layoutParams), scale_(scale), bgImg_(bgImg), bgDownImg_(bgDownImg), img_(img) {
 	}
 
 	bool Touch(const TouchInput &input) override;
 	void Draw(UIContext &dc) override;
 	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
-	virtual bool IsDown() { return pointerDownMask_ != 0; }
+	bool IsDown() const override { return pointerDownMask_ != 0; }
+
 	// chainable
 	MultiTouchButton *FlipImageH(bool flip) { flipImageH_ = flip; return this; }
 	MultiTouchButton *SetAngle(float angle) { angle_ = angle; bgAngle_ = angle; return this; }
 	MultiTouchButton *SetAngle(float angle, float bgAngle) { angle_ = angle; bgAngle_ = bgAngle; return this; }
 
 	bool CanGlide() const;
+	void SetMinimumAlpha(float minAlpha) { minimumAlpha_ = minAlpha; }
 
 protected:
 	uint32_t pointerDownMask_ = 0;
@@ -67,15 +82,16 @@ private:
 	float bgAngle_ = 0.0f;
 	float angle_ = 0.0f;
 	bool flipImageH_ = false;
+	float minimumAlpha_ = 0.0f;
 };
 
 class BoolButton : public MultiTouchButton {
 public:
-	BoolButton(bool *value, const char *key, ImageID bgImg, ImageID bgDownImg, ImageID img, float scale, UI::LayoutParams *layoutParams)
+	BoolButton(bool *value, std::string_view key, ImageID bgImg, ImageID bgDownImg, ImageID img, float scale, UI::LayoutParams *layoutParams)
 		: MultiTouchButton(key, bgImg, bgDownImg, img, scale, layoutParams), value_(value) {
 	}
 	bool Touch(const TouchInput &input) override;
-	bool IsDown() override { return *value_; }
+	bool IsDown() const override { return *value_; }
 
 	UI::Event OnChange;
 
@@ -85,23 +101,24 @@ private:
 
 class PSPButton : public MultiTouchButton {
 public:
-	PSPButton(int pspButtonBit, const char *key, ImageID bgImg, ImageID bgDownImg, ImageID img, float scale, UI::LayoutParams *layoutParams)
+	PSPButton(int pspButtonBit, std::string_view key, ImageID bgImg, ImageID bgDownImg, ImageID img, float scale, UI::LayoutParams *layoutParams)
 		: MultiTouchButton(key, bgImg, bgDownImg, img, scale, layoutParams), pspButtonBit_(pspButtonBit) {
 	}
 	bool Touch(const TouchInput &input) override;
-	bool IsDown() override;
+	bool IsDown() const override;
 
 private:
 	int pspButtonBit_;
 };
 
-class PSPDpad : public GamepadView {
+class PSPDpad : public GamepadComponent {
 public:
-	PSPDpad(ImageID arrowIndex, const char *key, ImageID arrowDownIndex, ImageID overlayIndex, float scale, float spacing, UI::LayoutParams *layoutParams);
+	PSPDpad(ImageID arrowIndex, std::string_view key, ImageID arrowDownIndex, ImageID overlayIndex, float scale, float spacing, UI::LayoutParams *layoutParams);
 
 	bool Touch(const TouchInput &input) override;
 	void Draw(UIContext &dc) override;
 	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
+	bool IsDown() const override { return down_ != 0; }
 
 private:
 	void ProcessTouch(float x, float y, bool down);
@@ -116,16 +133,17 @@ private:
 	int down_;
 };
 
-class PSPStick : public GamepadView {
+class PSPStick : public GamepadComponent {
 public:
-	PSPStick(ImageID bgImg, const char *key, ImageID stickImg, ImageID stickDownImg, int stick, float scale, UI::LayoutParams *layoutParams);
+	PSPStick(ImageID bgImg, std::string_view key, ImageID stickImg, ImageID stickDownImg, int stick, float scale, UI::LayoutParams *layoutParams);
 
 	bool Touch(const TouchInput &input) override;
 	void Draw(UIContext &dc) override;
 	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
+	bool IsDown() const override { return dragPointerId_ != -1; }
 
 protected:
-	int dragPointerId_;
+	int dragPointerId_ = -1;
 	ImageID bgImg_;
 	ImageID stickImageIndex_;
 	ImageID stickDownImg_;
@@ -134,8 +152,8 @@ protected:
 	float stick_size_;
 	float scale_;
 
-	float centerX_;
-	float centerY_;
+	float centerX_ = -1.0f;
+	float centerY_ = -1.0f;
 
 private:
 	void ProcessTouch(float x, float y, bool down);
@@ -155,22 +173,27 @@ private:
 	float posY_ = 0.0f;
 };
 
-//initializes the layout from Config. if a default layout does not exist,
-//it sets up default values
-void InitPadLayout(float xres, float yres, float globalScale = 1.15f);
-UI::ViewGroup *CreatePadLayout(float xres, float yres, bool *pause, bool showPauseButton, ControlMapper* controllMapper);
+struct TouchControlConfig;
+
+// Initializes the layout from Config. if a default layout does not exist, it sets up default values
+void InitPadLayout(TouchControlConfig *config, DeviceOrientation orientation, float xres, float yres, float globalScale = 1.15f);
+UI::ViewGroup *CreatePadLayout(const TouchControlConfig &config, float xres, float yres, bool *pause, ControlMapper *controlMapper);
 
 const int D_pad_Radius = 50;
 const int baseActionButtonSpacing = 60;
 
+// Customizable buttons, press a combination of buttons specified by pspButtonBit.
 class CustomButton : public MultiTouchButton {
 public:
-	CustomButton(uint64_t pspButtonBit, const char *key, bool toggle, bool repeat, ControlMapper* controllMapper, ImageID bgImg, ImageID bgDownImg, ImageID img, float scale, bool invertedContextDimension, UI::LayoutParams *layoutParams)
-		: MultiTouchButton(key, bgImg, bgDownImg, img, scale, layoutParams), pspButtonBit_(pspButtonBit), toggle_(toggle), repeat_(repeat), controlMapper_(controllMapper), on_(false), invertedContextDimension_(invertedContextDimension) {
+	CustomButton(uint64_t pspButtonBit, std::string_view key, bool toggle, bool repeat, ControlMapper* controllMapper, ImageID bgImg, ImageID bgDownImg, ImageID img, float scale, bool invertedContentDimension, UI::LayoutParams *layoutParams)
+		: MultiTouchButton(key, bgImg, bgDownImg, img, scale, layoutParams), pspButtonBit_(pspButtonBit), toggle_(toggle), repeat_(repeat), controlMapper_(controllMapper), on_(false), invertedContentDimension_(invertedContentDimension) {
 	}
 	bool Touch(const TouchInput &input) override;
 	void Update() override;
-	bool IsDown() override;
+	bool IsDown() const override;  // For visual purpose
+	bool IsDownForFadeoutCheck() const {
+		return !(pspButtonBit_ & (1ULL << 38));  // VIRTKEY_TOGGLE_TOUCH_CONTROLS from g_customKeyList
+	}
 
 	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
 private:
@@ -180,25 +203,29 @@ private:
 	int pressedFrames_ = 0;
 	ControlMapper* controlMapper_;
 	bool on_;
-	bool invertedContextDimension_; // Swap width and height
+	bool invertedContentDimension_; // Swap width and height
 };
+
+struct GestureControlConfig;
 
 class GestureGamepad : public UI::View {
 public:
-	GestureGamepad(ControlMapper* controllMapper) : controlMapper_(controllMapper) {};
+	explicit GestureGamepad(ControlMapper* controlMapper, int zoneIndex, UI::LayoutParams *layoutParams) : UI::View(layoutParams), controlMapper_(controlMapper), zoneIndex_(zoneIndex) {}
 
 	bool Touch(const TouchInput &input) override;
 	void Update() override;
 	void Draw(UIContext &dc) override;
 
-protected:
+private:
+	const GestureControlConfig &GetZone();
 
+	int zoneIndex_;
 	float lastX_ = 0.0f;
 	float lastY_ = 0.0f;
 	float deltaX_ = 0.0f;
 	float deltaY_ = 0.0f;
-	float downX_;
-	float downY_;
+	float downX_ = 0.0f;
+	float downY_ = 0.0f;
 	float lastTapRelease_ = 0.0f;
 	float lastTouchDown_ = 0.0f;
 	int dragPointerId_ = -1;
@@ -283,7 +310,8 @@ namespace CustomKeyData {
 		ImageID i; // UI ImageID
 		uint32_t c; // Key code
 	};
-	static const keyList customKeyList[] = {
+	// For CustomButton. NOTE: This list can NOT be freely reordered! We store a bitmask of the indices.
+	static const keyList g_customKeyList[] = {
 		{ ImageID("I_SQUARE"), CTRL_SQUARE },
 		{ ImageID("I_TRIANGLE"), CTRL_TRIANGLE },
 		{ ImageID("I_CIRCLE"), CTRL_CIRCLE },
@@ -326,10 +354,12 @@ namespace CustomKeyData {
 		{ ImageID::invalid(), VIRTKEY_AXIS_X_MAX },
 		{ ImageID::invalid(), VIRTKEY_AXIS_Y_MAX },
 		{ ImageID::invalid(), VIRTKEY_PREVIOUS_SLOT },
-		{ ImageID::invalid(), VIRTKEY_TOGGLE_TOUCH_CONTROLS },
+		{ ImageID::invalid(), VIRTKEY_TOGGLE_TOUCH_CONTROLS },  // See IsDownForFadeoutCheck
 		{ ImageID::invalid(), VIRTKEY_TOGGLE_DEBUGGER },
+		{ ImageID::invalid(), VIRTKEY_PAUSE_NO_MENU },
+		// IMPORTANT: Only add at the end!
 	};
-	static_assert(ARRAY_SIZE(customKeyList) <= 64, "Too many key for a uint64_t bit mask");
+	static_assert(ARRAY_SIZE(g_customKeyList) <= 64, "Too many key for a uint64_t bit mask");
 };
 
 // Gesture key only have virtual button that can work without constant press
@@ -367,10 +397,10 @@ namespace GestureKey {
 #ifndef MOBILE_DEVICE
 		VIRTKEY_RECORD,
 #endif
-		VIRTKEY_AXIS_X_MIN,
-		VIRTKEY_AXIS_Y_MIN,
-		VIRTKEY_AXIS_X_MAX,
-		VIRTKEY_AXIS_Y_MAX,
+		VIRTKEY_AXIS_RIGHT_X_MIN,
+		VIRTKEY_AXIS_RIGHT_Y_MIN,
+		VIRTKEY_AXIS_RIGHT_X_MAX,
+		VIRTKEY_AXIS_RIGHT_Y_MAX,
 		VIRTKEY_TOGGLE_DEBUGGER,
 	};
 }

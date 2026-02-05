@@ -466,7 +466,7 @@ static u32 sceUmdCancelWaitDriveStat() {
 }
 
 static u32 sceUmdGetErrorStat() {
-	return hleLogError(Log::sceIo, umdErrorStat);
+	return hleLogDebug(Log::sceIo, umdErrorStat);
 }
 
 void __UmdReplace(const Path &filepath) {
@@ -496,20 +496,23 @@ bool getUMDReplacePermit() {
 
 static u32 sceUmdReplaceProhibit() {
 	if (g_UMDReplacePermit) {
-		INFO_LOG(Log::sceIo, "sceUmdReplaceProhibit() - prohibited");
 		g_UMDReplacePermit = false;
 		System_Notify(SystemNotification::SWITCH_UMD_UPDATED);
+		return hleLogDebug(Log::sceIo, 0, "switched state to prohibited");
+	} else {
+		return hleLogDebug(Log::sceIo, 0);
 	}
-	return hleLogDebug(Log::sceIo, 0);
 }
 
 static u32 sceUmdReplacePermit() {
 	if (!g_UMDReplacePermit) {
-		INFO_LOG(Log::sceIo, "sceUmdReplacePermit() - permitted");
+		//INFO_LOG(Log::sceIo, "sceUmdReplacePermit() - permitted");
 		g_UMDReplacePermit = true;
 		System_Notify(SystemNotification::SWITCH_UMD_UPDATED);
+		return hleLogDebug(Log::sceIo, 0, "switched state to permitted");
+	} else {
+		return hleLogDebug(Log::sceIo, 0);
 	}
-	return hleLogDebug(Log::sceIo, 0);
 }
 
 const HLEFunction sceUmdUser[] = 
@@ -534,5 +537,5 @@ const HLEFunction sceUmdUser[] =
 
 void Register_sceUmdUser()
 {
-	RegisterModule("sceUmdUser", ARRAY_SIZE(sceUmdUser), sceUmdUser);
+	RegisterHLEModule("sceUmdUser", ARRAY_SIZE(sceUmdUser), sceUmdUser);
 }

@@ -25,14 +25,9 @@ private:
 	void CreateContents(UI::ViewGroup *parent);
 	void UpdateChat();
 
-	UI::EventReturn OnAskForChatMessage(UI::EventParams &e);
+	void OnAskForChatMessage(UI::EventParams &e);
 
-	UI::EventReturn OnSubmitMessage(UI::EventParams &e);
-	UI::EventReturn OnQuickChat1(UI::EventParams &e);
-	UI::EventReturn OnQuickChat2(UI::EventParams &e);
-	UI::EventReturn OnQuickChat3(UI::EventParams &e);
-	UI::EventReturn OnQuickChat4(UI::EventParams &e);
-	UI::EventReturn OnQuickChat5(UI::EventParams &e);
+	void OnSubmitMessage(UI::EventParams &e);
 
 	UI::TextEdit *chatEdit_ = nullptr;
 	UI::ScrollView *scroll_ = nullptr;

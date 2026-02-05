@@ -528,6 +528,7 @@ namespace MIPSInt
 				}
 				break;
 			}
+			break;
 
 		case 4: //mtc1
 			FI(fs) = R(rt);
@@ -715,11 +716,7 @@ namespace MIPSInt
 			}
 			else if (_RS == 1) //rotr
 			{
-#ifdef __MINGW32__
-				R(rd) = _rotr(R(rt), sa);
-#else
 				R(rd) = __rotr(R(rt), sa);
-#endif
 				break;
 			}
 			else
@@ -735,11 +732,7 @@ namespace MIPSInt
 			}
 			else if (_FD == 1) // rotrv
 			{
-#ifdef __MINGW32__
-				R(rd) = _rotr(R(rt), R(rs));
-#else
 				R(rd) = __rotr(R(rt), R(rs));
-#endif
 				break;
 			}
 			else goto wrong;
@@ -1045,8 +1038,11 @@ namespace MIPSInt
 	void Int_Emuhack(MIPSOpcode op)
 	{
 		if (((op >> 24) & 3) != EMUOP_CALL_REPLACEMENT) {
-			_dbg_assert_msg_(false,"Trying to interpret emuhack instruction that can't be interpreted");
+			_dbg_assert_msg_(false, "Trying to interpret emuhack instruction that can't be interpreted");
 		}
+
+		_assert_((PC & 3) == 0);
+
 		// It's a replacement func!
 		int index = op.encoding & 0xFFFFFF;
 		const ReplacementTableEntry *entry = GetReplacementFunc(index);
@@ -1071,6 +1067,4 @@ namespace MIPSInt
 			MIPSInterpret(Memory::Read_Instruction(PC, true));
 		}
 	}
-
-
 }

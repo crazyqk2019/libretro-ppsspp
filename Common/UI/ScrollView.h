@@ -47,6 +47,9 @@ public:
 	NeighborResult FindScrollNeighbor(View *view, const Point2D &target, FocusDirection direction, NeighborResult best) override;
 
 private:
+	Margins GetMargins() const;
+	float ChildSize() const;  // in the scrolled direction
+	float ScrollMax() const;
 	float HardClampedScrollPos(float pos) const;
 
 	// TODO: Don't adjust pull_ within this!
@@ -77,6 +80,7 @@ private:
 	float *rememberPos_ = nullptr;
 	bool alignOpposite_ = false;
 	bool draggingBob_ = false;
+	bool mouseHover_ = false;
 
 	float barDragStart_ = 0.0f;
 	float barDragOffset_ = 0.0f;
@@ -91,7 +95,7 @@ public:
 	virtual ~ListAdaptor() {}
 	virtual View *CreateItemView(int index, ImageID *optionalImageID) = 0;
 	virtual int GetNumItems() = 0;
-	virtual bool AddEventCallback(View *view, std::function<EventReturn(EventParams &)> callback) { return false; }
+	virtual void AddEventCallback(View *view, std::function<void(EventParams &)> callback) {}
 	virtual std::string GetTitle(int index) const { return ""; }
 	virtual void SetSelected(int sel) { }
 	virtual int GetSelected() { return -1; }
@@ -102,7 +106,7 @@ public:
 	ChoiceListAdaptor(const char *items[], int numItems) : items_(items), numItems_(numItems) {}
 	View *CreateItemView(int index, ImageID *optionalImageID) override;
 	int GetNumItems() override { return numItems_; }
-	bool AddEventCallback(View *view, std::function<EventReturn(EventParams &)> callback) override;
+	void AddEventCallback(View *view, std::function<void(EventParams &)> callback) override;
 
 private:
 	const char **items_;
@@ -116,7 +120,7 @@ public:
 	StringVectorListAdaptor(const std::vector<std::string> &items, int selected = -1) : items_(items), selected_(selected) {}
 	View *CreateItemView(int index, ImageID *optionalImageID) override;
 	int GetNumItems() override { return (int)items_.size(); }
-	bool AddEventCallback(View *view, std::function<EventReturn(EventParams &)> callback) override;
+	void AddEventCallback(View *view, std::function<void(EventParams &)> callback) override;
 	void SetSelected(int sel) override { selected_ = sel; }
 	std::string GetTitle(int index) const override { return items_[index]; }
 	int GetSelected() override { return selected_; }
@@ -141,7 +145,7 @@ public:
 
 private:
 	void CreateAllItems();
-	EventReturn OnItemCallback(int num, EventParams &e);
+	void OnItemCallback(int num, EventParams &e);
 	ListAdaptor *adaptor_;
 	LinearLayout *linLayout_;
 	float maxHeight_;

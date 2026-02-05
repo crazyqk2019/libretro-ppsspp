@@ -13,9 +13,10 @@
 #include "Common/Log.h"
 #include "Common/TimeUtil.h"
 #include "Common/LogReporting.h"
+#include "Common/Render/AtlasGen.h"
 
 UIContext::UIContext() {
-	fontStyle_ = new UI::FontStyle();
+	fontStyle_ = new FontStyle();
 	bounds_ = Bounds(0, 0, g_display.dp_xres, g_display.dp_yres);
 }
 
@@ -39,33 +40,32 @@ void UIContext::Init(Draw::DrawContext *thin3d, Draw::Pipeline *uipipe, Draw::Pi
 	textDrawer_ = TextDrawer::Create(thin3d);  // May return nullptr if no implementation is available for this platform.
 }
 
-void UIContext::setUIAtlas(const std::string &name) {
-	_dbg_assert_(!name.empty());
-	UIAtlas_ = name;
-}
-
 void UIContext::BeginFrame() {
 	frameStartTime_ = time_now_d();
-	if (!uitexture_ || UIAtlas_ != lastUIAtlas_) {
-		uitexture_ = CreateTextureFromFile(draw_, UIAtlas_.c_str(), ImageFileType::ZIM, false);
-		lastUIAtlas_ = UIAtlas_;
-		if (!fontTexture_) {
-#if PPSSPP_PLATFORM(WINDOWS) || PPSSPP_PLATFORM(ANDROID)
-			// Don't bother with loading font_atlas.zim
-#else
-			fontTexture_ = CreateTextureFromFile(draw_, "font_atlas.zim", ImageFileType::ZIM, false);
-#endif
-			if (!fontTexture_) {
-				// Load the smaller ascii font only, like on Android. For debug ui etc.
-				fontTexture_ = CreateTextureFromFile(draw_, "asciifont_atlas.zim", ImageFileType::ZIM, false);
-				if (!fontTexture_) {
-					WARN_LOG(Log::System, "Failed to load font_atlas.zim or asciifont_atlas.zim");
-				}
-			}
+	if (atlasInvalid_ || !uitexture_) {
+		if (uitexture_) {
+			uitexture_->Release();
 		}
+		AtlasData data = atlasProvider_(draw_, AtlasChoice::General, 1.0f / g_display.dpi_scale_x, atlasInvalid_);
+		uitexture_ = data.texture;
+		_dbg_assert_(uitexture_);
+		ui_draw2d.SetAtlas(data.atlas);
+		atlasInvalid_ = false;
 	}
+
+	if (!fontTexture_) {
+		AtlasData data = atlasProvider_(draw_, AtlasChoice::Font, 1.0f / g_display.dpi_scale_x, false);
+		fontTexture_ = data.texture;
+		_dbg_assert_(fontTexture_);
+		ui_draw2d.SetFontAtlas(data.atlas);
+	}
+
 	uidrawbuffer_->SetCurZ(0.0f);
 	ActivateTopScissor();
+}
+
+void UIContext::InvalidateAtlas() {
+	atlasInvalid_ = true;  // will cause it to be reloaded on the next frame.
 }
 
 void UIContext::SetTintSaturation(float tint, float sat) {
@@ -141,34 +141,39 @@ Bounds UIContext::GetScissorBounds() {
 		return bounds_;
 }
 
-Bounds UIContext::GetLayoutBounds() const {
+Bounds UIContext::GetLayoutBounds(bool ignoreBottomInset) const {
 	Bounds bounds = GetBounds();
 
 	float left = System_GetPropertyFloat(SYSPROP_DISPLAY_SAFE_INSET_LEFT);
 	float right = System_GetPropertyFloat(SYSPROP_DISPLAY_SAFE_INSET_RIGHT);
 	float top = System_GetPropertyFloat(SYSPROP_DISPLAY_SAFE_INSET_TOP);
 	float bottom = System_GetPropertyFloat(SYSPROP_DISPLAY_SAFE_INSET_BOTTOM);
+	if (ignoreBottomInset) {
+		bottom = 0.0f;
+	}
 
-	// ILOG("Insets: %f %f %f %f", left, right, top, bottom);
+	// Note that we ignore bottom here, to let lists etc. extend to the bottom of the screen.
+	// However, we will add the same space to the bottom of scrolled lists, so that you don't have to
+	// touch things below the safe inset.
 
 	// Adjust left edge to compensate for cutouts (notches) if any.
 	bounds.x += left;
 	bounds.w -= (left + right);
 	bounds.y += top;
 	bounds.h -= (top + bottom);
-
 	return bounds;
 }
 
 void UIContext::ActivateTopScissor() {
 	Bounds bounds;
 	if (scissorStack_.size()) {
-		const float scale = g_display.pixel_in_dps;
+		float scale_x = g_display.pixel_in_dps_x;
+		float scale_y = g_display.pixel_in_dps_y;
 		bounds = scissorStack_.back();
-		int x = floorf(scale * bounds.x);
-		int y = floorf(scale * bounds.y);
-		int w = std::max(0.0f, ceilf(scale * bounds.w));
-		int h = std::max(0.0f, ceilf(scale * bounds.h));
+		int x = floorf(scale_x * bounds.x);
+		int y = floorf(scale_y * bounds.y);
+		int w = std::max(0.0f, ceilf(scale_x * bounds.w));
+		int h = std::max(0.0f, ceilf(scale_y * bounds.h));
 		if (x < 0 || y < 0 || x + w > g_display.pixel_xres || y + h > g_display.pixel_yres) {
 			DEBUG_LOG(Log::G3D, "UI scissor out of bounds: %d,%d-%d,%d / %d,%d", x, y, w, h, g_display.pixel_xres, g_display.pixel_yres);
 			if (x < 0) { w += x; x = 0; }
@@ -197,39 +202,44 @@ void UIContext::SetFontScale(float scaleX, float scaleY) {
 	fontScaleY_ = scaleY;
 }
 
-void UIContext::SetFontStyle(const UI::FontStyle &fontStyle) {
+void UIContext::SetFontStyle(const FontStyle &fontStyle) {
 	*fontStyle_ = fontStyle;
 	if (textDrawer_) {
 		textDrawer_->SetFontScale(fontScaleX_, fontScaleY_);
-		textDrawer_->SetFont(fontStyle.fontName.c_str(), fontStyle.sizePts, fontStyle.flags);
+		textDrawer_->SetOrCreateFont(fontStyle);
 	}
 }
 
-void UIContext::MeasureText(const UI::FontStyle &style, float scaleX, float scaleY, std::string_view str, float *x, float *y, int align) const {
+static FontID AtlasFontFromStyle(const FontStyle &style) {
+	// For now, we only have one font in the atlas.
+	return FontID("UBUNTU24");
+}
+
+void UIContext::MeasureText(const FontStyle &style, float scaleX, float scaleY, std::string_view str, float *x, float *y, int align) const {
 	_dbg_assert_(str.data() != nullptr);
 	if (!textDrawer_ || (align & FLAG_DYNAMIC_ASCII)) {
 		float sizeFactor = (float)style.sizePts / 24.0f;
 		Draw()->SetFontScale(scaleX * sizeFactor, scaleY * sizeFactor);
-		Draw()->MeasureText(style.atlasFont, str, x, y);
+		Draw()->MeasureText(AtlasFontFromStyle(style), str, x, y);
 	} else {
-		textDrawer_->SetFont(style.fontName.c_str(), style.sizePts, style.flags);
+		textDrawer_->SetOrCreateFont(style);
 		textDrawer_->SetFontScale(scaleX, scaleY);
 		textDrawer_->MeasureString(str, x, y);
-		textDrawer_->SetFont(fontStyle_->fontName.c_str(), fontStyle_->sizePts, fontStyle_->flags);
+		textDrawer_->SetOrCreateFont(*fontStyle_);
 	}
 }
 
-void UIContext::MeasureTextRect(const UI::FontStyle &style, float scaleX, float scaleY, std::string_view str, const Bounds &bounds, float *x, float *y, int align) const {
+void UIContext::MeasureTextRect(const FontStyle &style, float scaleX, float scaleY, std::string_view str, float maxWidth, float *x, float *y, int align) const {
 	_dbg_assert_(str.data() != nullptr);
 	if (!textDrawer_ || (align & FLAG_DYNAMIC_ASCII)) {
 		float sizeFactor = (float)style.sizePts / 24.0f;
 		Draw()->SetFontScale(scaleX * sizeFactor, scaleY * sizeFactor);
-		Draw()->MeasureTextRect(style.atlasFont, str, bounds, x, y, align);
+		Draw()->MeasureTextRect(AtlasFontFromStyle(style), str, maxWidth, x, y, align);
 	} else {
-		textDrawer_->SetFont(style.fontName.c_str(), style.sizePts, style.flags);
+		textDrawer_->SetOrCreateFont(style);
 		textDrawer_->SetFontScale(scaleX, scaleY);
-		textDrawer_->MeasureStringRect(str, bounds, x, y, align);
-		textDrawer_->SetFont(fontStyle_->fontName.c_str(), fontStyle_->sizePts, fontStyle_->flags);
+		textDrawer_->MeasureStringRect(str, maxWidth, x, y, align);
+		textDrawer_->SetOrCreateFont(*fontStyle_);
 	}
 }
 
@@ -237,14 +247,14 @@ void UIContext::DrawText(std::string_view str, float x, float y, uint32_t color,
 	_dbg_assert_(str.data() != nullptr);
 	if (!textDrawer_ || (align & FLAG_DYNAMIC_ASCII)) {
 		// Use the font texture if this font is in that texture instead.
-		bool useFontTexture = Draw()->GetFontAtlas()->getFont(fontStyle_->atlasFont) != nullptr;
+		bool useFontTexture = Draw()->GetFontAtlas()->getFont(AtlasFontFromStyle(*fontStyle_)) != nullptr;
 		if (useFontTexture) {
 			Flush();
 			BindFontTexture();
 		}
 		float sizeFactor = (float)fontStyle_->sizePts / 24.0f;
 		Draw()->SetFontScale(fontScaleX_ * sizeFactor, fontScaleY_ * sizeFactor);
-		Draw()->DrawText(fontStyle_->atlasFont, str, x, y, color, align);
+		Draw()->DrawText(AtlasFontFromStyle(*fontStyle_), str, x, y, color, align);
 		if (useFontTexture)
 			Flush();
 	} else {
@@ -263,14 +273,14 @@ void UIContext::DrawTextShadow(std::string_view str, float x, float y, uint32_t 
 void UIContext::DrawTextRect(std::string_view str, const Bounds &bounds, uint32_t color, int align) {
 	if (!textDrawer_ || (align & FLAG_DYNAMIC_ASCII)) {
 		// Use the font texture if this font is in that texture instead.
-		bool useFontTexture = Draw()->GetFontAtlas()->getFont(fontStyle_->atlasFont) != nullptr;
+		bool useFontTexture = Draw()->GetFontAtlas()->getFont(AtlasFontFromStyle(*fontStyle_)) != nullptr;
 		if (useFontTexture) {
 			Flush();
 			BindFontTexture();
 		}
 		float sizeFactor = (float)fontStyle_->sizePts / 24.0f;
 		Draw()->SetFontScale(fontScaleX_ * sizeFactor, fontScaleY_ * sizeFactor);
-		Draw()->DrawTextRect(fontStyle_->atlasFont, str, bounds.x, bounds.y, bounds.w, bounds.h, color, align);
+		Draw()->DrawTextRect(AtlasFontFromStyle(*fontStyle_), str, bounds.x, bounds.y, bounds.w, bounds.h, color, align);
 		if (useFontTexture)
 			Flush();
 	} else {
@@ -285,11 +295,11 @@ void UIContext::DrawTextRect(std::string_view str, const Bounds &bounds, uint32_
 
 static constexpr float MIN_TEXT_SCALE = 0.7f;
 
-float UIContext::CalculateTextScale(std::string_view str, float availWidth, float availHeight) const {
+float UIContext::CalculateTextScale(std::string_view str, float availWidth) const {
 	float actualWidth, actualHeight;
-	Bounds availBounds(0, 0, availWidth, availHeight);
-	MeasureTextRect(theme->uiFont, 1.0f, 1.0f, str, availBounds, &actualWidth, &actualHeight, ALIGN_VCENTER);
+	MeasureTextRect(theme->uiFont, 1.0f, 1.0f, str, availWidth, &actualWidth, &actualHeight, ALIGN_VCENTER);
 	if (actualWidth > availWidth) {
+		// TODO: Return feedback that wrapping was needed.
 		return std::max(MIN_TEXT_SCALE, availWidth / actualWidth);
 	}
 	return 1.0f;
@@ -302,7 +312,7 @@ void UIContext::DrawTextRectSqueeze(std::string_view str, const Bounds &bounds, 
 	}
 	float origScaleX = fontScaleX_;
 	float origScaleY = fontScaleY_;
-	float scale = CalculateTextScale(str, bounds.w / origScaleX, bounds.h / origScaleY);
+	float scale = CalculateTextScale(str, bounds.w / origScaleX);
 	SetFontScale(scale * origScaleX, scale * origScaleY);
 	Bounds textBounds(bounds.x, bounds.y, bounds.w, bounds.h);
 	DrawTextRect(str, textBounds, color, align);
@@ -350,6 +360,11 @@ void UIContext::DrawRectDropShadow(const Bounds &bounds, float radius, float alp
 void UIContext::DrawImageVGradient(ImageID image, uint32_t color1, uint32_t color2, const Bounds &bounds) {
 	uidrawbuffer_->DrawImageStretchVGradient(image, bounds.x, bounds.y, bounds.x2(), bounds.y2(), color1, color2);
 }
+
+void UIContext::DrawImageRotated(ImageID atlas_image, float x, float y, float scale, float angle, uint32_t color, bool mirror_h) {
+	uidrawbuffer_->DrawImageRotated(atlas_image, x, y, scale, angle, color, mirror_h);
+}
+
 
 void UIContext::PushTransform(const UITransform &transform) {
 	Flush();

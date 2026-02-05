@@ -25,6 +25,7 @@
 #include "Common/Serialize/SerializeMap.h"
 #include "Common/Data/Collections/ThreadSafeList.h"
 #include "Core/HLE/HLE.h"
+#include "Core/HLE/ErrorCodes.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/CoreParameter.h"
@@ -642,5 +643,5 @@ const HLEFunction sceGe_user[] = {
 };
 
 void Register_sceGe_user() {
-	RegisterModule("sceGe_user", ARRAY_SIZE(sceGe_user), sceGe_user);
+	RegisterHLEModule("sceGe_user", ARRAY_SIZE(sceGe_user), sceGe_user);
 }

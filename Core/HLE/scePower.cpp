@@ -21,6 +21,7 @@
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
+#include "Core/HLE/ErrorCodes.h"
 #include "Core/CoreTiming.h"
 #include "Core/MemMap.h"
 #include "Core/Reporting.h"
@@ -629,9 +630,9 @@ const HLEFunction sceSuspendForUser[] = {
 
 
 void Register_scePower() {
-	RegisterModule("scePower",ARRAY_SIZE(scePower),scePower);
+	RegisterHLEModule("scePower",ARRAY_SIZE(scePower),scePower);
 }
 
 void Register_sceSuspendForUser() {
-	RegisterModule("sceSuspendForUser", ARRAY_SIZE(sceSuspendForUser), sceSuspendForUser);
+	RegisterHLEModule("sceSuspendForUser", ARRAY_SIZE(sceSuspendForUser), sceSuspendForUser);
 }

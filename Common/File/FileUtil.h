@@ -17,9 +17,9 @@
 
 #pragma once
 
-#include <fstream>
 #include <cstdio>
 #include <string>
+#include <string_view>
 #include <time.h>
 #include <cstdint>
 
@@ -55,18 +55,21 @@ enum OpenFlag {
 // of DirectoryFileSystem::Open here eventually for symmetry.
 int OpenFD(const Path &filename, OpenFlag flags);
 
+// Cross-platform way to close FDs, corresponsing in platform support with OpenFD above.
+void CloseFD(int fd);
+
 // Resolves symlinks and similar.
-std::string ResolvePath(const std::string &path);
+std::string ResolvePath(std::string_view path);
 
 // Returns true if file filename exists
 bool Exists(const Path &path);
 
 // Returns true if file filename exists in directory path.
-bool ExistsInDir(const Path &path, const std::string &filename);
+bool ExistsInDir(const Path &path, std::string_view filename);
 
 // Returns true if filename exists, and is a directory
 // Supports Android content URIs.
-bool IsDirectory(const Path &filename);
+bool IsDirectory(const Path &path);
 
 // Returns struct with modification date of file
 bool GetModifTime(const Path &filename, tm &return_time);
@@ -92,7 +95,7 @@ bool CreateFullPath(const Path &fullPath);
 
 // Deletes a given file by name, return true on success
 // Doesn't support deleting a directory (although it will work on some platforms - ideally shouldn't)
-bool Delete(const Path &filename);
+bool Delete(const Path &filename, bool quiet = false);
 
 // Deletes a directory by name, returns true on success
 // Directory must be empty.
@@ -133,6 +136,19 @@ const Path &GetExeDirectory();
 
 const Path GetCurDirectory();
 
+// Portable version of fseek() that works with 64-bit offsets if supported by
+// the operating system.
+int Fseek(FILE *file, int64_t offset, int whence);
+
+// Portable version of fseek() that works with 64-bit offsets if supported by
+// the operating system, and returns the new offset from the start of the file
+// or -1 if it failed.
+int64_t Fseektell(FILE *file, int64_t offset, int whence);
+
+// Portable version of ftell() that works with 64-bit offsets if supported by
+// the operating system.
+int64_t Ftell(FILE *file);
+
 // simple wrapper for cstdlib file functions to
 // hopefully will make error checking easier
 // and make forgetting an fclose() harder
@@ -152,7 +168,7 @@ public:
 	template <typename T>
 	bool ReadArray(T* data, size_t length)
 	{
-		if (!IsOpen() || length != std::fread(data, sizeof(T), length, m_file))
+		if (!IsOpen() || length != fread(data, sizeof(T), length, m_file))
 			m_good = false;
 
 		return m_good;
@@ -161,7 +177,7 @@ public:
 	template <typename T>
 	bool WriteArray(const T* data, size_t length)
 	{
-		if (!IsOpen() || length != std::fwrite(data, sizeof(T), length, m_file))
+		if (!IsOpen() || length != fwrite(data, sizeof(T), length, m_file))
 			m_good = false;
 
 		return m_good;
@@ -183,11 +199,11 @@ public:
 	bool IsGood() const { return m_good; }
 	operator bool() const { return IsGood() && IsOpen(); }
 
-	std::FILE* ReleaseHandle();
+	FILE* ReleaseHandle();
 
-	std::FILE* GetHandle() { return m_file; }
+	FILE* GetHandle() { return m_file; }
 
-	void SetHandle(std::FILE* file);
+	void SetHandle(FILE* file);
 
 	bool Seek(int64_t off, int origin);
 	uint64_t Tell();
@@ -198,19 +214,27 @@ public:
 	// clear error state
 	void Clear() {
 		m_good = true;
+#ifndef HAVE_LIBRETRO_VFS
 #undef clearerr
 		std::clearerr(m_file);
+#endif
 	}
 
 private:
-	std::FILE *m_file = nullptr;
+	FILE *m_file = nullptr;
 	bool m_good = true;
 };
+
+#ifdef HAVE_LIBRETRO_VFS
+// Call this on libretro core initialization with the libretro virtual file
+// system interface.
+void InitLibretroVFS(const struct retro_vfs_interface_info *vfs) noexcept;
+#endif
 
 // TODO: Refactor, this was moved from the old file_util.cpp.
 
 // Whole-file reading/writing
-bool WriteStringToFile(bool textFile, const std::string &str, const Path &filename);
+bool WriteStringToFile(bool textFile, std::string_view str, const Path &filename);
 bool WriteDataToFile(bool textFile, const void* data, size_t size, const Path &filename);
 
 bool ReadFileToStringOptions(bool textFile, bool allowShort, const Path &path, std::string *str);

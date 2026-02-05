@@ -25,10 +25,13 @@
 #include "Common/Net/HTTPClient.h"
 #include "Common/UI/UIScreen.h"
 #include "UI/TabbedDialogScreen.h"
-#include "UI/MiscScreens.h"
+#include "UI/BaseScreens.h"
+#include "UI/PopupScreens.h"
+#include "UI/SimpleDialogScreen.h"
+
 #include "GPU/Common/ShaderCommon.h"
 
-class DevMenuScreen : public PopupScreen {
+class DevMenuScreen : public UI::PopupScreen {
 public:
 	DevMenuScreen(const Path &gamePath, I18NCat cat) : PopupScreen(T(cat, "Dev Tools")), gamePath_(gamePath) {}
 
@@ -38,18 +41,16 @@ public:
 	void dialogFinished(const Screen *dialog, DialogResult result) override;
 
 protected:
-	UI::EventReturn OnLogView(UI::EventParams &e);
-	UI::EventReturn OnLogConfig(UI::EventParams &e);
-	UI::EventReturn OnJitCompare(UI::EventParams &e);
-	UI::EventReturn OnShaderView(UI::EventParams &e);
-	UI::EventReturn OnDeveloperTools(UI::EventParams &e);
-	UI::EventReturn OnResetLimitedLogging(UI::EventParams &e);
+	void OnJitCompare(UI::EventParams &e);
+	void OnShaderView(UI::EventParams &e);
+	void OnDeveloperTools(UI::EventParams &e);
+	void OnResetLimitedLogging(UI::EventParams &e);
 
 private:
 	Path gamePath_;
 };
 
-class JitDebugScreen : public UIDialogScreenWithBackground {
+class JitDebugScreen : public UIBaseDialogScreen {
 public:
 	JitDebugScreen() {}
 	void CreateViews() override;
@@ -57,26 +58,29 @@ public:
 	const char *tag() const override { return "JitDebug"; }
 
 private:
-	UI::EventReturn OnEnableAll(UI::EventParams &e);
-	UI::EventReturn OnDisableAll(UI::EventParams &e);
+	void OnEnableAll(UI::EventParams &e);
+	void OnDisableAll(UI::EventParams &e);
 };
 
-class LogConfigScreen : public UIDialogScreenWithBackground {
+class LogConfigScreen : public UITwoPaneBaseDialogScreen {
 public:
-	LogConfigScreen() {}
-	void CreateViews() override;
+	LogConfigScreen() : UITwoPaneBaseDialogScreen(Path(), TwoPaneFlags::ContentsCanScroll | TwoPaneFlags::SettingsInContextMenu) {}
+	void CreateSettingsViews(UI::ViewGroup *parent) override;
+	void CreateContentViews(UI::ViewGroup *parent) override;
 
 	const char *tag() const override { return "LogConfig"; }
 
 private:
-	UI::EventReturn OnToggleAll(UI::EventParams &e);
-	UI::EventReturn OnEnableAll(UI::EventParams &e);
-	UI::EventReturn OnDisableAll(UI::EventParams &e);
-	UI::EventReturn OnLogLevel(UI::EventParams &e);
-	UI::EventReturn OnLogLevelChange(UI::EventParams &e);
+	std::string_view GetTitle() const override;
+
+	void OnToggleAll(UI::EventParams &e);
+	void OnEnableAll(UI::EventParams &e);
+	void OnDisableAll(UI::EventParams &e);
+	void OnLogLevel(UI::EventParams &e);
+	void OnLogLevelChange(UI::EventParams &e);
 };
 
-class LogScreen : public UIDialogScreenWithBackground {
+class LogViewScreen : public UIBaseDialogScreen {
 public:
 	void CreateViews() override;
 	void update() override;
@@ -85,9 +89,7 @@ public:
 
 private:
 	void UpdateLog();
-	UI::EventReturn OnSubmit(UI::EventParams &e);
 
-	UI::TextEdit *cmdLine_ = nullptr;
 	UI::LinearLayout *vert_ = nullptr;
 	UI::ScrollView *scroll_ = nullptr;
 	bool toBottom_ = false;
@@ -103,22 +105,7 @@ private:
 	void OnCompleted(DialogResult result) override;
 };
 
-class SystemInfoScreen : public TabbedUIDialogScreenWithGameBackground {
-public:
-	SystemInfoScreen(const Path &filename) : TabbedUIDialogScreenWithGameBackground(filename) {}
-
-	const char *tag() const override { return "SystemInfo"; }
-
-	void CreateTabs() override;
-	void update() override;
-
-protected:
-	UI::EventReturn CopySummaryToClipboard(UI::EventParams &e);
-	bool ShowSearchControls() const override { return false; }
-	void CreateInternalsTab(UI::ViewGroup *internals);
-};
-
-class GPIGPOScreen : public PopupScreen {
+class GPIGPOScreen : public UI::PopupScreen {
 public:
 	GPIGPOScreen(std::string_view title) : PopupScreen(title, "OK") {}
 	const char *tag() const override { return "GPIGPO"; }
@@ -127,21 +114,21 @@ protected:
 	void CreatePopupContents(UI::ViewGroup *parent) override;
 };
 
-class ShaderListScreen : public UIDialogScreenWithBackground {
+class ShaderListScreen : public UITabbedBaseDialogScreen {
 public:
-	void CreateViews() override;
+	ShaderListScreen() : UITabbedBaseDialogScreen(Path()) {}
+	void CreateTabs() override;
 
 	const char *tag() const override { return "ShaderList"; }
 
 private:
+	bool ForceHorizontalTabs() const override {return true; }
 	int ListShaders(DebugShaderType shaderType, UI::LinearLayout *view);
 
-	UI::EventReturn OnShaderClick(UI::EventParams &e);
-
-	UI::TabHolder *tabs_;
+	void OnShaderClick(UI::EventParams &e);
 };
 
-class ShaderViewScreen : public UIDialogScreenWithBackground {
+class ShaderViewScreen : public UIBaseDialogScreen {
 public:
 	ShaderViewScreen(std::string id, DebugShaderType type)
 		: id_(id), type_(type) {}
@@ -156,27 +143,28 @@ private:
 	DebugShaderType type_;
 };
 
-class FrameDumpTestScreen : public UIDialogScreenWithBackground {
+class FrameDumpTestScreen : public UITabbedBaseDialogScreen {
 public:
-	FrameDumpTestScreen();
+	FrameDumpTestScreen() : UITabbedBaseDialogScreen(Path()) {}
 	~FrameDumpTestScreen();
 
-	void CreateViews() override;
+	void CreateTabs() override;
 	void update() override;
 
 	const char *tag() const override { return "FrameDumpTest"; }
 
 private:
-	UI::EventReturn OnLoadDump(UI::EventParams &e);
+	void OnLoadDump(UI::EventParams &e);
+	bool ShowSearchControls() const override { return false; }
 
 	std::vector<std::string> files_;
 	std::shared_ptr<http::Request> listing_;
 	std::shared_ptr<http::Request> dumpDownload_;
 };
 
-class TouchTestScreen : public UIDialogScreenWithGameBackground {
+class TouchTestScreen : public UIBaseDialogScreen {
 public:
-	TouchTestScreen(const Path &gamePath) : UIDialogScreenWithGameBackground(gamePath) {
+	TouchTestScreen(const Path &gamePath) : UIBaseDialogScreen(gamePath) {
 		for (int i = 0; i < MAX_TOUCH_POINTS; i++) {
 			touches_[i].id = -1;
 		}
@@ -210,9 +198,9 @@ protected:
 	void CreateViews() override;
 	void UpdateLogView();
 
-	UI::EventReturn OnImmersiveModeChange(UI::EventParams &e);
-	UI::EventReturn OnRenderingBackend(UI::EventParams &e);
-	UI::EventReturn OnRecreateActivity(UI::EventParams &e);
+	void OnImmersiveModeChange(UI::EventParams &e);
+	void OnRenderingBackend(UI::EventParams &e);
+	void OnRecreateActivity(UI::EventParams &e);
 };
 
 void DrawProfile(UIContext &ui);

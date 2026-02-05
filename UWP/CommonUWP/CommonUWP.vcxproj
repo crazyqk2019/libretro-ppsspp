@@ -1,10 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
-    <ProjectConfiguration Include="Debug|ARM">
-      <Configuration>Debug</Configuration>
-      <Platform>ARM</Platform>
-    </ProjectConfiguration>
     <ProjectConfiguration Include="Debug|ARM64">
       <Configuration>Debug</Configuration>
       <Platform>ARM64</Platform>
@@ -12,10 +8,6 @@
     <ProjectConfiguration Include="Debug|x64">
       <Configuration>Debug</Configuration>
       <Platform>x64</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Release|ARM">
-      <Configuration>Release</Configuration>
-      <Platform>ARM</Platform>
     </ProjectConfiguration>
     <ProjectConfiguration Include="Release|ARM64">
       <Configuration>Release</Configuration>
@@ -169,6 +161,7 @@
     <ClInclude Include="..\..\Common\Net\URL.h" />
     <ClInclude Include="..\..\Common\Net\WebsocketServer.h" />
     <ClInclude Include="..\..\Common\Profiler\Profiler.h" />
+    <ClInclude Include="..\..\Common\Render\AtlasGen.h" />
     <ClInclude Include="..\..\Common\Render\DrawBuffer.h" />
     <ClInclude Include="..\..\Common\Render\ManagedTexture.h" />
     <ClInclude Include="..\..\Common\Render\TextureAtlas.h" />
@@ -224,10 +217,12 @@
     <ClInclude Include="..\..\Common\UI\AsyncImageFileView.h" />
     <ClInclude Include="..\..\Common\UI\Context.h" />
     <ClInclude Include="..\..\Common\UI\IconCache.h" />
+    <ClInclude Include="..\..\Common\UI\Notice.h" />
     <ClInclude Include="..\..\Common\UI\PopupScreens.h" />
     <ClInclude Include="..\..\Common\UI\Root.h" />
     <ClInclude Include="..\..\Common\UI\Screen.h" />
     <ClInclude Include="..\..\Common\UI\ScrollView.h" />
+    <ClInclude Include="..\..\Common\UI\TabHolder.h" />
     <ClInclude Include="..\..\Common\UI\Tween.h" />
     <ClInclude Include="..\..\Common\UI\UI.h" />
     <ClInclude Include="..\..\Common\UI\UIScreen.h" />
@@ -242,6 +237,10 @@
     <ClInclude Include="..\..\Common\VR\VRRenderer.h" />
     <ClInclude Include="..\..\Common\x64Analyzer.h" />
     <ClInclude Include="..\..\Common\x64Emitter.h" />
+    <ClInclude Include="..\..\ext\aemu_postoffice\client\delay_impl.h" />
+    <ClInclude Include="..\..\ext\aemu_postoffice\client\log_impl.h" />
+    <ClInclude Include="..\..\ext\aemu_postoffice\client\postoffice_client.h" />
+    <ClInclude Include="..\..\ext\aemu_postoffice\client\sock_impl.h" />
     <ClInclude Include="..\..\ext\at3_standalone\aac_defines.h" />
     <ClInclude Include="..\..\ext\at3_standalone\at3_decoders.h" />
     <ClInclude Include="..\..\ext\at3_standalone\atrac.h" />
@@ -262,6 +261,7 @@
     <ClInclude Include="..\..\ext\basis_universal\basisu_transcoder_uastc.h" />
     <ClInclude Include="..\..\ext\imgui\imconfig.h" />
     <ClInclude Include="..\..\ext\imgui\imgui.h" />
+    <ClInclude Include="..\..\ext\imgui\imgui_extras.h" />
     <ClInclude Include="..\..\ext\imgui\imgui_impl_platform.h" />
     <ClInclude Include="..\..\ext\imgui\imgui_impl_thin3d.h" />
     <ClInclude Include="..\..\ext\imgui\imgui_internal.h" />
@@ -330,7 +330,6 @@
     <ClCompile Include="..\..\Common\Input\InputState.cpp" />
     <ClCompile Include="..\..\Common\Math\curves.cpp" />
     <ClCompile Include="..\..\Common\Math\expression_parser.cpp" />
-    <ClCompile Include="..\..\Common\Math\fast\fast_matrix.c" />
     <ClCompile Include="..\..\Common\Math\lin\matrix4x4.cpp" />
     <ClCompile Include="..\..\Common\Math\lin\vec3.cpp" />
     <ClCompile Include="..\..\Common\Math\math_util.cpp" />
@@ -342,6 +341,7 @@
     <ClCompile Include="..\..\Common\Net\URL.cpp" />
     <ClCompile Include="..\..\Common\Net\WebsocketServer.cpp" />
     <ClCompile Include="..\..\Common\Profiler\Profiler.cpp" />
+    <ClCompile Include="..\..\Common\Render\AtlasGen.cpp" />
     <ClCompile Include="..\..\Common\Render\DrawBuffer.cpp" />
     <ClCompile Include="..\..\Common\Render\ManagedTexture.cpp" />
     <ClCompile Include="..\..\Common\Render\TextureAtlas.cpp" />
@@ -385,10 +385,12 @@
     <ClCompile Include="..\..\Common\UI\AsyncImageFileView.cpp" />
     <ClCompile Include="..\..\Common\UI\Context.cpp" />
     <ClCompile Include="..\..\Common\UI\IconCache.cpp" />
+    <ClCompile Include="..\..\Common\UI\Notice.cpp" />
     <ClCompile Include="..\..\Common\UI\PopupScreens.cpp" />
     <ClCompile Include="..\..\Common\UI\Root.cpp" />
     <ClCompile Include="..\..\Common\UI\Screen.cpp" />
     <ClCompile Include="..\..\Common\UI\ScrollView.cpp" />
+    <ClCompile Include="..\..\Common\UI\TabHolder.cpp" />
     <ClCompile Include="..\..\Common\UI\Tween.cpp" />
     <ClCompile Include="..\..\Common\UI\UI.cpp" />
     <ClCompile Include="..\..\Common\UI\UIScreen.cpp" />
@@ -403,6 +405,11 @@
     <ClCompile Include="..\..\Common\VR\VRRenderer.cpp" />
     <ClCompile Include="..\..\Common\x64Analyzer.cpp" />
     <ClCompile Include="..\..\Common\x64Emitter.cpp" />
+    <ClCompile Include="..\..\ext\aemu_postoffice\client\delay_impl_cpp.cpp" />
+    <ClCompile Include="..\..\ext\aemu_postoffice\client\log_impl_ppsspp.cpp" />
+    <ClCompile Include="..\..\ext\aemu_postoffice\client\mutex_impl_cpp.cpp" />
+    <ClCompile Include="..\..\ext\aemu_postoffice\client\postoffice.c" />
+    <ClCompile Include="..\..\ext\aemu_postoffice\client\sock_impl_windows.c" />
     <ClCompile Include="..\..\ext\at3_standalone\atrac.cpp" />
     <ClCompile Include="..\..\ext\at3_standalone\atrac3.cpp" />
     <ClCompile Include="..\..\ext\at3_standalone\atrac3plus.cpp" />
@@ -416,6 +423,7 @@
     <ClCompile Include="..\..\ext\imgui\imgui.cpp" />
     <ClCompile Include="..\..\ext\imgui\imgui_demo.cpp" />
     <ClCompile Include="..\..\ext\imgui\imgui_draw.cpp" />
+    <ClCompile Include="..\..\ext\imgui\imgui_extras.cpp" />
     <ClCompile Include="..\..\ext\imgui\imgui_impl_platform.cpp" />
     <ClCompile Include="..\..\ext\imgui\imgui_impl_thin3d.cpp" />
     <ClCompile Include="..\..\ext\imgui\imgui_tables.cpp" />
@@ -451,10 +459,6 @@
     <None Include="..\..\ext\basis_universal\basisu_transcoder_tables_pvrtc2_45.inc" />
     <None Include="..\..\ext\basis_universal\basisu_transcoder_tables_pvrtc2_alpha_33.inc" />
     <None Include="..\..\ext\libpng17\CMakeLists.txt" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="..\..\Common\Math\fast\fast_matrix_neon.S" />
-    <None Include="..\..\Common\Math\lin\matrix_neon.s" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\cpu_features_UWP\cpu_features_UWP.vcxproj">

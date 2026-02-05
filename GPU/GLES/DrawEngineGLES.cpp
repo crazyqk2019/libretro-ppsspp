@@ -253,7 +253,7 @@ void DrawEngineGLES::Flush() {
 
 	GEPrimitiveType prim = prevPrim_;
 
-	Shader *vshader = shaderManager_->ApplyVertexShader(CanUseHardwareTransform(prim), useHWTessellation_, dec_, decOptions_.expandAllWeightsToFloat, applySkinInDecode_ || !CanUseHardwareTransform(prim), &vsid);
+	Shader *vshader = shaderManager_->ApplyVertexShader(CanUseHardwareTransform(prim), useHWTessellation_, dec_->VertexType(), decOptions_.expandAllWeightsToFloat, applySkinInDecode_ || !CanUseHardwareTransform(prim), &vsid);
 
 	GLRBuffer *vertexBuffer = nullptr;
 	GLRBuffer *indexBuffer = nullptr;
@@ -316,11 +316,11 @@ void DrawEngineGLES::Flush() {
 				glprim[prim], 0, vertexCount);
 		}
 		if (useDepthRaster_) {
-			DepthRasterTransform(prim, dec_, dec_->VertexType(), vertexCount);
+			DepthRasterSubmitRaw(prim, dec_, dec_->VertexType(), vertexCount);
 		}
 	} else {
 		PROFILE_THIS_SCOPE("soft");
-		VertexDecoder *swDec = dec_;
+		const VertexDecoder *swDec = dec_;
 		if (swDec->nweights != 0) {
 			u32 withSkinning = lastVType_ | (1 << 26);
 			if (withSkinning != lastVType_) {
@@ -356,7 +356,9 @@ void DrawEngineGLES::Flush() {
 
 		// We need correct viewport values in gstate_c already.
 		if (gstate_c.IsDirty(DIRTY_VIEWPORTSCISSOR_STATE)) {
-			ConvertViewportAndScissor(framebufferManager_->UseBufferedRendering(),
+			ConvertViewportAndScissor(
+				framebufferManager_->GetDisplayLayoutConfigCopy(),
+				framebufferManager_->UseBufferedRendering(),
 				framebufferManager_->GetRenderWidth(), framebufferManager_->GetRenderHeight(),
 				framebufferManager_->GetTargetBufferWidth(), framebufferManager_->GetTargetBufferHeight(),
 				vpAndScissor_);
@@ -396,7 +398,11 @@ void DrawEngineGLES::Flush() {
 
 		if (textureNeedsApply) {
 			gstate_c.pixelMapped = result.pixelMapped;
+			gstate_c.dstSquared = false;
 			textureCache_->ApplyTexture();
+			if (gstate_c.dstSquared) {
+				gstate_c.Dirty(DIRTY_BLEND_STATE);
+			}
 			gstate_c.pixelMapped = false;
 		}
 

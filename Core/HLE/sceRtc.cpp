@@ -29,6 +29,7 @@
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Common/TimeUtil.h"
 #include "Core/HLE/HLE.h"
+#include "Core/HLE/ErrorCodes.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/Reporting.h"
@@ -76,7 +77,7 @@ const int PSP_TIME_INVALID_MINUTES = -5;
 const int PSP_TIME_INVALID_SECONDS = -6;
 const int PSP_TIME_INVALID_MICROSECONDS = -7;
 
-static u64 __RtcGetCurrentTick()
+u64 __RtcGetCurrentTick()
 {
 	// TODO: It's probably expecting ticks since January 1, 0001?
 	return CoreTiming::GetGlobalTimeUs() + rtcBaseTicks;
@@ -1014,5 +1015,5 @@ const HLEFunction sceRtc[] =
 
 void Register_sceRtc()
 {
-	RegisterModule("sceRtc", ARRAY_SIZE(sceRtc), sceRtc);
+	RegisterHLEModule("sceRtc", ARRAY_SIZE(sceRtc), sceRtc);
 }

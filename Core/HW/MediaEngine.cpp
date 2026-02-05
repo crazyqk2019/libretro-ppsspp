@@ -17,6 +17,7 @@
 
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Common/Math/SIMDHeaders.h"
+#include "Common/StringUtils.h"
 #include "Core/System.h"
 #include "Core/Debugger/MemBlockInfo.h"
 #include "Core/HW/MediaEngine.h"
@@ -37,6 +38,10 @@ extern "C" {
 #include "libavutil/imgutils.h"
 #include "libswscale/swscale.h"
 
+#if LIBAVFORMAT_VERSION_MAJOR >= 59
+	// private libavformat api (see demux.h in ffmpeg src tree)
+	void avpriv_stream_set_need_parsing(AVStream *st, enum AVStreamParseType type);
+#endif
 }
 #endif // USE_FFMPEG
 
@@ -86,7 +91,12 @@ void ffmpeg_logger(void *, int level, const char *format, va_list va_args) {
 	} else if (level >= AV_LOG_VERBOSE) {
 		DEBUG_LOG(Log::ME, "FF: %s", tmp);
 	} else {
-		INFO_LOG(Log::ME, "FF: %s", tmp);
+		// Downgrade some log messages we don't care about
+		if (startsWith(tmp, "No accelerated colorspace") || startsWith(tmp, "SEI type 1 size 40 truncated at 36")) {
+			VERBOSE_LOG(Log::ME, "FF: %s", tmp);
+		} else {
+			INFO_LOG(Log::ME, "FF: %s", tmp);
+		}
 	}
 }
 
@@ -322,6 +332,8 @@ bool MediaEngine::openContext(bool keepReadPos) {
 			return false;
 	}
 
+	// Here it shouldn't be possible for m_videoStream to be invalid.
+
 	if (!setVideoStream(m_videoStream, true))
 		return false;
 
@@ -337,8 +349,7 @@ bool MediaEngine::openContext(bool keepReadPos) {
 	return true;
 }
 
-void MediaEngine::closeContext()
-{
+void MediaEngine::closeContext() {
 #ifdef USE_FFMPEG
 	if (m_buffer)
 		av_free(m_buffer);
@@ -350,7 +361,7 @@ void MediaEngine::closeContext()
 		av_free(m_pIOContext->buffer);
 	if (m_pIOContext)
 		av_free(m_pIOContext);
-	for (auto it : m_pCodecCtxs) {
+	for (auto &it : m_pCodecCtxs) {
 #if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(57, 33, 100)
 		avcodec_free_context(&it.second);
 #else
@@ -359,8 +370,12 @@ void MediaEngine::closeContext()
 	}
 	m_pCodecCtxs.clear();
 	// These are streams allocated from avformat_new_stream.
-	for (auto it : m_codecsToClose) {
+	for (auto &it : m_codecsToClose) {
+#if LIBAVCODEC_VERSION_MAJOR >= 62
+		avcodec_free_context(&it);
+#else
 		avcodec_close(it);
+#endif
 	}
 	m_codecsToClose.clear();
 	if (m_pFormatCtx)
@@ -414,6 +429,9 @@ bool MediaEngine::addVideoStream(int streamNum, int streamId) {
 #if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(57, 33, 100)
 			stream->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
 			stream->codecpar->codec_id = AV_CODEC_ID_H264;
+#endif
+#if LIBAVFORMAT_VERSION_MAJOR >= 59
+			avpriv_stream_set_need_parsing(stream, AVSTREAM_PARSE_FULL);
 #else
 			stream->request_probe = 0;
 			stream->need_parsing = AVSTREAM_PARSE_FULL;
@@ -678,7 +696,7 @@ bool MediaEngine::stepVideo(int videoPixelMode, bool skipFrame) {
 				avcodec_send_packet(m_pCodecCtx, &packet);
 			int result = avcodec_receive_frame(m_pCodecCtx, m_pFrame);
 			if (result == 0) {
-				result = m_pFrame->pkt_size;
+				result = 1;
 				frameFinished = 1;
 			} else if (result == AVERROR(EAGAIN)) {
 				result = 0;

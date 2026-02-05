@@ -79,7 +79,7 @@ bool HasToken();
 /// Called when the system is being shut down. If Shutdown() returns false, the shutdown should be aborted if possible.
 bool Shutdown();
 
-void DownloadImageIfMissing(const std::string &cache_key, std::string &&url);
+void DownloadImageIfMissing(std::string_view url);
 
 /// Called once a frame at vsync time on the CPU thread, during gameplay.
 void FrameUpdate();
@@ -96,7 +96,6 @@ bool HasAchievementsOrLeaderboards();
 bool LoginAsync(const char *username, const char *password);
 void Logout();
 
-bool IsReadyToStart();
 void SetGame(const Path &path, IdentifiedFileType fileType, FileLoader *fileLoader);
 void ChangeUMD(const Path &path, FileLoader *fileLoader);  // for in-game UMD change
 void UnloadGame();  // Call when leaving a game.

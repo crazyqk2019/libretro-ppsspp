@@ -1,3 +1,9 @@
+ifeq ($(PLATFORM_EXT), android)
+HAVE_LIBRETRO_VFS ?= 1
+else
+HAVE_LIBRETRO_VFS ?= 0
+endif
+
 FFMPEGDIR		= $(CORE_DIR)/ffmpeg
 LIBRETRODIR		= $(CORE_DIR)/libretro
 COREDIR			= $(CORE_DIR)/Core
@@ -268,25 +274,21 @@ SOURCES_C += \
 COREFLAGS += -DSTACK_LINE_READER_BUFFER_SIZE=1024
 COREFLAGS += -DHTTPS_NOT_AVAILABLE
 
-COREFLAGS += -D_7ZIP_ST
-INCFLAGS += -I$(EXTDIR)/libchdr/deps/lzma-22.01/include
+COREFLAGS += -DZ7_ST
+INCFLAGS += -I$(EXTDIR)/libchdr/deps/lzma-24.05/include
 
 SOURCES_C += \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/Alloc.c \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/Bcj2.c \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/Bcj2Enc.c \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/Bra.c \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/Bra86.c \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/CpuArch.c \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/Delta.c \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/LzFind.c \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/LzFindOpt.c \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/LzmaDec.c \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/LzmaEnc.c \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/Lzma86Dec.c \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/Lzma86Enc.c \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/LzmaLib.c \
-	$(EXTDIR)/libchdr/deps/lzma-22.01/src/Sort.c
+	$(EXTDIR)/libchdr/deps/lzma-24.05/src/Alloc.c \
+	$(EXTDIR)/libchdr/deps/lzma-24.05/src/Bra.c \
+	$(EXTDIR)/libchdr/deps/lzma-24.05/src/Bra86.c \
+	$(EXTDIR)/libchdr/deps/lzma-24.05/src/BraIA64.c \
+	$(EXTDIR)/libchdr/deps/lzma-24.05/src/CpuArch.c \
+	$(EXTDIR)/libchdr/deps/lzma-24.05/src/Delta.c \
+	$(EXTDIR)/libchdr/deps/lzma-24.05/src/LzFind.c \
+	$(EXTDIR)/libchdr/deps/lzma-24.05/src/LzmaDec.c \
+	$(EXTDIR)/libchdr/deps/lzma-24.05/src/LzmaEnc.c \
+	$(EXTDIR)/libchdr/deps/lzma-24.05/src/Lzma86Dec.c \
+	$(EXTDIR)/libchdr/deps/lzma-24.05/src/Sort.c
 
 INCFLAGS += -I$(EXTDIR)/libchdr/include
 
@@ -309,6 +311,64 @@ SOURCES_CXX += \
 	${EXTDIR}/at3_standalone/compat.cpp \
 	${EXTDIR}/at3_standalone/fft.cpp \
 	${EXTDIR}/at3_standalone/mem.cpp
+
+COREFLAGS += -DARMIPS_USE_STD_FILESYSTEM
+SOURCES_CXX += \
+	$(EXTDIR)/armips/Util/ByteArray.cpp \
+	$(EXTDIR)/armips/Util/CRC.cpp \
+	$(EXTDIR)/armips/Util/EncodingTable.cpp \
+	$(EXTDIR)/armips/Util/FileClasses.cpp \
+	$(EXTDIR)/armips/Util/Util.cpp \
+	$(EXTDIR)/armips/Core/ELF/ElfRelocator.cpp \
+	$(EXTDIR)/armips/Core/ELF/ElfFile.cpp \
+	$(EXTDIR)/armips/Core/Assembler.cpp \
+	$(EXTDIR)/armips/Core/Allocations.cpp \
+	$(EXTDIR)/armips/Core/Common.cpp \
+	$(EXTDIR)/armips/Core/Expression.cpp \
+	$(EXTDIR)/armips/Core/ExpressionFunctions.cpp \
+	$(EXTDIR)/armips/Core/ExpressionFunctionHandler.cpp \
+	$(EXTDIR)/armips/Core/FileManager.cpp \
+	$(EXTDIR)/armips/Core/Misc.cpp \
+	$(EXTDIR)/armips/Core/SymbolData.cpp \
+	$(EXTDIR)/armips/Core/SymbolTable.cpp \
+	$(EXTDIR)/armips/Core/Types.cpp \
+	$(EXTDIR)/armips/Commands/CAssemblerCommand.cpp \
+	$(EXTDIR)/armips/Commands/CAssemblerLabel.cpp \
+	$(EXTDIR)/armips/Commands/CDirectiveArea.cpp \
+	$(EXTDIR)/armips/Commands/CDirectiveConditional.cpp \
+	$(EXTDIR)/armips/Commands/CDirectiveData.cpp \
+	$(EXTDIR)/armips/Commands/CDirectiveFile.cpp \
+	$(EXTDIR)/armips/Commands/CDirectiveMessage.cpp \
+	$(EXTDIR)/armips/Commands/CommandSequence.cpp \
+	$(EXTDIR)/armips/Archs/Architecture.cpp \
+	$(EXTDIR)/armips/Archs/ARM/Arm.cpp \
+	$(EXTDIR)/armips/Archs/ARM/ArmOpcodes.cpp \
+	$(EXTDIR)/armips/Archs/ARM/ArmParser.cpp \
+	$(EXTDIR)/armips/Archs/ARM/ArmElfRelocator.cpp \
+	$(EXTDIR)/armips/Archs/ARM/ArmExpressionFunctions.cpp \
+	$(EXTDIR)/armips/Archs/ARM/CArmInstruction.cpp \
+	$(EXTDIR)/armips/Archs/ARM/CThumbInstruction.cpp \
+	$(EXTDIR)/armips/Archs/ARM/Pool.cpp \
+	$(EXTDIR)/armips/Archs/ARM/ThumbOpcodes.cpp \
+	$(EXTDIR)/armips/Archs/MIPS/CMipsInstruction.cpp \
+	$(EXTDIR)/armips/Archs/MIPS/Mips.cpp \
+	$(EXTDIR)/armips/Archs/MIPS/MipsElfFile.cpp \
+	$(EXTDIR)/armips/Archs/MIPS/MipsElfRelocator.cpp \
+	$(EXTDIR)/armips/Archs/MIPS/MipsExpressionFunctions.cpp \
+	$(EXTDIR)/armips/Archs/MIPS/MipsMacros.cpp \
+	$(EXTDIR)/armips/Archs/MIPS/MipsOpcodes.cpp \
+	$(EXTDIR)/armips/Archs/MIPS/MipsParser.cpp \
+	$(EXTDIR)/armips/Archs/MIPS/PsxRelocator.cpp \
+	$(EXTDIR)/armips/Archs/SuperH/CShInstruction.cpp \
+	$(EXTDIR)/armips/Archs/SuperH/ShElfRelocator.cpp \
+	$(EXTDIR)/armips/Archs/SuperH/ShExpressionFunctions.cpp \
+	$(EXTDIR)/armips/Archs/SuperH/ShOpcodes.cpp \
+	$(EXTDIR)/armips/Archs/SuperH/ShParser.cpp \
+	$(EXTDIR)/armips/Archs/SuperH/SuperH.cpp \
+	$(EXTDIR)/armips/Parser/DirectivesParser.cpp \
+	$(EXTDIR)/armips/Parser/ExpressionParser.cpp \
+	$(EXTDIR)/armips/Parser/Parser.cpp \
+	$(EXTDIR)/armips/Parser/Tokenizer.cpp
 
 ifeq ($(PLATFORM_EXT), android)
 COREFLAGS += -DHAVE_DLFCN_H
@@ -367,13 +427,11 @@ SOURCES_CXX += \
 	$(EXTDIR)/imgui/imgui.cpp \
 	$(EXTDIR)/imgui/imgui_demo.cpp \
 	$(EXTDIR)/imgui/imgui_draw.cpp \
+	$(EXTDIR)/imgui/imgui_extras.cpp \
 	$(EXTDIR)/imgui/imgui_impl_thin3d.cpp \
 	$(EXTDIR)/imgui/imgui_impl_platform.cpp \
 	$(EXTDIR)/imgui/imgui_tables.cpp \
 	$(EXTDIR)/imgui/imgui_widgets.cpp
-
-SOURCES_CXX += \
-	$(EXTDIR)/armips/Core/Types.cpp
 
 SOURCES_CXX += \
 	$(COMMONDIR)/Crypto/md5.cpp \
@@ -467,12 +525,12 @@ SOURCES_CXX += \
 	$(COMMONDIR)/UI/UI.cpp \
 	$(COMMONDIR)/UI/Context.cpp \
 	$(COMMONDIR)/UI/UIScreen.cpp \
+	$(COMMONDIR)/UI/Notice.cpp \
 	$(COMMONDIR)/UI/Tween.cpp \
 	$(COMMONDIR)/UI/IconCache.cpp \
 	$(COMMONDIR)/UI/View.cpp \
 	$(COMMONDIR)/UI/ViewGroup.cpp \
 	$(COMMONDIR)/UI/ScrollView.cpp \
-	$(COMMONDIR)/UI/PopupScreens.cpp \
 	$(COMMONDIR)/System/Display.cpp \
 	$(COMMONDIR)/System/Request.cpp \
 	$(COMMONDIR)/System/OSD.cpp \
@@ -503,9 +561,8 @@ SOURCES_CXX += \
 	$(COMMONDIR)/VR/VRInput.cpp \
 	$(COMMONDIR)/VR/VRRenderer.cpp
 
-SOURCES_C +=\
-	$(COMMONDIR)/GPU/OpenGL/gl3stub.c \
-	$(COMMONDIR)/Math/fast/fast_matrix.c
+SOURCES_C += \
+	$(COMMONDIR)/GPU/OpenGL/gl3stub.c
 
 SOURCES_CXX += \
 	$(GPUCOMMONDIR)/Draw2D.cpp \
@@ -640,6 +697,22 @@ SOURCES_CXX += \
 	  $(EXTDIR)/libadrenotools/lib/linkernsbypass/elf_soname_patcher.cpp
 endif
 
+SOURCES_C += \
+	       $(EXTDIR)/aemu_postoffice/client/postoffice.c
+
+SOURCES_CXX += \
+	       $(EXTDIR)/aemu_postoffice/client/mutex_impl_cpp.cpp \
+	       $(EXTDIR)/aemu_postoffice/client/delay_impl_cpp.cpp \
+	       $(EXTDIR)/aemu_postoffice/client/log_impl_ppsspp.cpp \
+
+ifeq ($(PLATFORM_EXT), win32)
+SOURCES_C += \
+	       $(EXTDIR)/aemu_postoffice/client/sock_impl_windows.c
+else
+SOURCES_C += \
+	       $(EXTDIR)/aemu_postoffice/client/sock_impl_linux.c
+endif
+
 SOURCES_CXX += \
            $(COMMONDIR)/Render/Text/draw_text.cpp \
 	       $(EXTDIR)/jpge/jpgd.cpp \
@@ -652,12 +725,14 @@ SOURCES_CXX += \
 	       $(COREDIR)/WaveFile.cpp \
 	       $(COREDIR)/KeyMap.cpp \
 	       $(COREDIR)/KeyMapDefaults.cpp \
+	       $(COREDIR)/LuaContext.cpp \
 	       $(COREDIR)/FileLoaders/HTTPFileLoader.cpp \
 	       $(COREDIR)/FileLoaders/CachingFileLoader.cpp \
 	       $(COREDIR)/FileLoaders/DiskCachingFileLoader.cpp \
 	       $(COREDIR)/FileLoaders/RetryingFileLoader.cpp \
 	       $(COREDIR)/FileLoaders/RamCachingFileLoader.cpp \
 	       $(COREDIR)/FileLoaders/LocalFileLoader.cpp \
+	       $(COREDIR)/FileLoaders/ZipFileLoader.cpp \
 	       $(COREDIR)/CoreTiming.cpp \
 	       $(COREDIR)/CwCheat.cpp \
 	       $(COREDIR)/HDRemaster.cpp \
@@ -740,6 +815,7 @@ SOURCES_CXX += \
 	       $(COREDIR)/HLE/sceMpeg.cpp \
 	       $(COREDIR)/HLE/sceNet.cpp \
 	       $(COREDIR)/HLE/sceNet_lib.cpp \
+	       $(COREDIR)/HLE/NetAdhocCommon.cpp \
 	       $(COREDIR)/HLE/sceNetAdhoc.cpp \
 	       $(COREDIR)/HLE/sceNetAdhocMatching.cpp \
 	       $(COREDIR)/HLE/sceNetApctl.cpp \
@@ -758,6 +834,7 @@ SOURCES_CXX += \
 	       $(COREDIR)/HLE/sceParseUri.cpp \
 	       $(COREDIR)/HLE/scePower.cpp \
 	       $(COREDIR)/HLE/scePsmf.cpp \
+	       $(COREDIR)/HLE/sceReg.cpp \
 	       $(COREDIR)/HLE/sceRtc.cpp \
 	       $(COREDIR)/HLE/sceSas.cpp \
 	       $(COREDIR)/HLE/sceSsl.cpp \
@@ -823,15 +900,18 @@ SOURCES_CXX += \
 	       $(COREDIR)/Reporting.cpp \
 	       $(COREDIR)/RetroAchievements.cpp \
 	       $(COREDIR)/SaveState.cpp \
+	       $(COREDIR)/SaveStateRewind.cpp \
 	       $(COREDIR)/Screenshot.cpp \
 	       $(COREDIR)/System.cpp \
-	       $(COREDIR)/ThreadPools.cpp \
 	       $(COREDIR)/Util/AtracTrack.cpp \
 	       $(COREDIR)/Util/BlockAllocator.cpp \
 	       $(COREDIR)/Util/MemStick.cpp \
 	       $(COREDIR)/Util/PPGeDraw.cpp \
+	       $(COREDIR)/Util/RecentFiles.cpp \
 	       $(COREDIR)/Util/AudioFormat.cpp \
+	       $(COREDIR)/Util/PathUtil.cpp \
 	       $(COREDIR)/Util/PortManager.cpp \
+	       $(COREDIR)/Util/GameDB.cpp \
 	       $(CORE_DIR)/UI/GameInfoCache.cpp
 
 SOURCES_CXX += $(COREDIR)/HLE/__sceAudio.cpp
@@ -856,10 +936,6 @@ ifeq ($(WITH_DYNAREC),1)
 			       $(GPUCOMMONDIR)/VertexDecoderArm.cpp
 
 		ifeq ($(HAVE_NEON),1)
-			SOURCES_CXX   += \
-					 $(COREDIR)/MIPS/ARM/ArmCompVFPUNEON.cpp \
-					 $(COREDIR)/MIPS/ARM/ArmCompVFPUNEONUtil.cpp
-
 			SOURCES_C += $(EXTDIR)/libpng17/arm/arm_init.c \
 				     $(EXTDIR)/libpng17/arm/filter_neon_intrinsics.c
 			ASMFILES   += $(EXTDIR)/libpng17/arm/filter_neon.S
@@ -888,16 +964,6 @@ ifeq ($(WITH_DYNAREC),1)
 		     $(COREDIR)/MIPS/ARM64/Arm64IRRegCache.cpp \
 		     $(COREDIR)/Util/DisArm64.cpp \
 		     $(GPUCOMMONDIR)/VertexDecoderArm64.cpp
-
-		ifeq ($(HAVE_NEON),1)
-			SOURCES_CXX   += \
-					 $(COREDIR)/MIPS/ARM/ArmCompVFPUNEON.cpp \
-					 $(COREDIR)/MIPS/ARM/ArmCompVFPUNEONUtil.cpp
-
-			SOURCES_C += $(EXTDIR)/libpng17/arm/arm_init.c \
-				     $(EXTDIR)/libpng17/arm/filter_neon_intrinsics.c
-			ASMFILES   += $(EXTDIR)/libpng17/arm/filter_neon.S
-		endif
    else
 	ifneq (,$(findstring msvc,$(platform)))
 	ifeq (,$(findstring x64,$(platform)))
@@ -985,14 +1051,6 @@ SOURCES_CXX += \
 
 ifeq ($(PLATFORM_EXT), win32)
 SOURCES_CXX += \
-	$(GPUDIR)/Directx9/DrawEngineDX9.cpp \
-	$(GPUDIR)/Directx9/FramebufferManagerDX9.cpp \
-	$(GPUDIR)/Directx9/GPU_DX9.cpp \
-	$(GPUDIR)/Directx9/ShaderManagerDX9.cpp \
-	$(GPUDIR)/Directx9/StateMappingDX9.cpp \
-	$(GPUDIR)/Directx9/TextureCacheDX9.cpp
-
-SOURCES_CXX += \
 	$(GPUDIR)/D3D11/DrawEngineD3D11.cpp \
 	$(GPUDIR)/D3D11/FramebufferManagerD3D11.cpp \
 	$(GPUDIR)/D3D11/GPU_D3D11.cpp \
@@ -1003,15 +1061,8 @@ SOURCES_CXX += \
    $(LIBRETRODIR)/LibretroD3D11Context.cpp
 
 SOURCES_CXX += \
-	$(COMMONDIR)/GPU/D3D9/D3D9ShaderCompiler.cpp \
-	$(COMMONDIR)/GPU/D3D9/D3D9StateCache.cpp \
-	$(COMMONDIR)/GPU/D3D9/D3DCompilerLoader.cpp \
-	$(COMMONDIR)/GPU/D3D9/thin3d_d3d9.cpp \
 	$(COMMONDIR)/GPU/D3D11/D3D11Loader.cpp \
 	$(COMMONDIR)/GPU/D3D11/thin3d_d3d11.cpp
-
-INCFLAGS += -I$(CORE_DIR)/dx9sdk/Include -I$(CORE_DIR)/dx9sdk/Include/DX11
-
 endif
 
 SOURCES_CXX += \
@@ -1040,6 +1091,7 @@ SOURCES_C +=   $(ZSTDDIR)/common/debug.c \
                $(ZSTDDIR)/compress/zstd_lazy.c \
                $(ZSTDDIR)/compress/zstd_ldm.c \
                $(ZSTDDIR)/compress/zstd_opt.c \
+               $(ZSTDDIR)/compress/zstd_preSplit.c \
                $(ZSTDDIR)/compress/zstdmt_compress.c \
                $(ZSTDDIR)/decompress/huf_decompress.c \
                $(ZSTDDIR)/decompress/zstd_ddict.c \
@@ -1076,19 +1128,21 @@ SOURCES_C += \
 endif
 
 ifeq ($(HAVE_LIBRETRO_VFS), 1)
-DEFINES += -DHAVE_LIBRETRO_VFS
-INCFLAGS += -I$(LIBRETROCOMMONDIR)/include
+COREFLAGS += -DHAVE_LIBRETRO_VFS
 SOURCES_C += $(LIBRETROCOMMONDIR)/compat/compat_posix_string.c \
              $(LIBRETROCOMMONDIR)/compat/fopen_utf8.c \
-             $(LIBRETROCOMMONDIR)/encodings/encoding_utf.c \
              $(LIBRETROCOMMONDIR)/compat/compat_strl.c \
+             $(LIBRETROCOMMONDIR)/encodings/encoding_utf.c \
              $(LIBRETROCOMMONDIR)/file/file_path.c \
+             $(LIBRETROCOMMONDIR)/file/file_path_io.c \
              $(LIBRETROCOMMONDIR)/streams/file_stream.c \
              $(LIBRETROCOMMONDIR)/streams/file_stream_transforms.c \
              $(LIBRETROCOMMONDIR)/string/stdstring.c \
              $(LIBRETROCOMMONDIR)/time/rtime.c \
              $(LIBRETROCOMMONDIR)/vfs/vfs_implementation.c
 endif
+
+INCFLAGS += -I$(LIBRETROCOMMONDIR)/include
 
 GIT_VERSION_SRC = $(CORE_DIR)/git-version.cpp
 GIT_VERSION := $(shell git describe --always || echo v-1.unknown)
