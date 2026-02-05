@@ -23,6 +23,7 @@
 #include <ShlObj.h>
 #include <string>
 #if !PPSSPP_PLATFORM(UWP)
+#include <cstdint>
 #include "Windows/W32Util/ShellUtil.h"
 #endif
 #endif
